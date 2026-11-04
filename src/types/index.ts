@@ -165,6 +165,7 @@ export interface Clinic {
   lastLoginAt?: string;
   trialEndsAt?: string;
   deletedAt?: string; // soft delete, restorable for 30 days
+  retentionDays?: number; // patient data retention (7); undefined = keep
 }
 
 export interface ClinicGroup {
@@ -451,6 +452,7 @@ export interface InternalNote {
 export interface Appointment {
   id: string;
   clinicId: string;
+  patientId?: string; // set by the server (patients table)
   createdAt: string; // "date scheduled" (UTC ISO)
   start: string; // clinic wall-clock ISO
   end: string;
