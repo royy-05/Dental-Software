@@ -1,0 +1,537 @@
+Kivi Health Booking Platform: Scope of Work
+
+Nov 5, 2026 · @Jaydeb Barman
+
+A multi-clinic appointment booking SaaS for healthcare practices, with three layers: a patient booking widget, a clinic panel for each practice, and a super admin panel for the platform owner. Phase 1 is a clickable prototype; production follows once the prototype is approved.
+
+1. Platform at a glance
+
+One platform, three layers, with each clinic's data kept separate.
+
+  ------------------------------------------------------------------------------------------------------------------------------
+  Layer                    Used by                               Purpose
+  ------------------------ ------------------------------------- ---------------------------------------------------------------
+  Super admin panel        Platform owner team                   Onboard clinics, set plans and features, monitor every clinic
+
+  Clinic panel             Clinic owners, managers, front desk   Configure booking, manage appointments, review performance
+
+  Patient booking widget   Patients                              Book an appointment from the clinic's link or website
+  ------------------------------------------------------------------------------------------------------------------------------
+
+-   Each clinic gets its own booking link (example: book.domain.com/clinic-name), website embed code, branding and settings.
+
+-   One login can access several clinics and switch between them from a clinic selector in the top bar.
+
+-   Every booking carries its source (Google Ads, Google Business Profile, Reserve with Google, Website, or a custom referrer) so results can be tracked end to end.
+
+2. Roles and permissions
+
+Six roles, each limited to what its job needs.
+
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Role             Layer               Access                                                                                    Restrictions
+  ---------------- ------------------- ----------------------------------------------------------------------------------------- ----------------------------------------------------
+  Super Admin      Super admin panel   All clinics, plans, features, users, global settings, platform analytics, impersonation   None
+
+  Support Agent    Super admin panel   View clinics, tickets, logs; impersonate with reason logged                               No billing, no plan or feature changes, no deletes
+
+  Clinic Owner     Clinic panel        Everything in their clinic(s), staff users, billing view, all reports                     Cannot see other clinics
+
+  Clinic Manager   Clinic panel        Reasons, providers, insurances, templates, settings, appointments, reports                No billing, cannot remove the owner
+
+  Front Desk       Clinic panel        Appointments (view, confirm, reschedule, cancel), patient details                         No settings, templates or reports
+
+  Patient          Booking widget      Book, reschedule or cancel own appointment from email/SMS links                           No login required
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-   Super Admin can create custom roles later by toggling permissions per module.
+
+-   A Hide PHI switch masks patient names, phone numbers and emails on screen for any clinic user (useful for screen sharing).
+
+3. Patient booking widget
+
+Patients book in four steps, with an optional provider step. What each step shows is set per clinic (section 4).
+
+Booking steps
+
+1.  Reason for visit
+
+    -   Reasons grouped under New Patient and Existing Patient (sections or tabs, per theme)
+
+    -   Card per reason: name, short description, duration, "View details" for longer text
+
+    -   Only active reasons with at least one bookable provider are shown
+
+2.  Provider (optional, off by default)
+
+    -   Pick a provider or "First available"
+
+3.  Date and time
+
+    -   Month calendar with available, selected and unavailable days
+
+    -   Slots grouped by Morning, Afternoon, Evening, with the clinic time zone shown
+
+    -   Slots respect provider hours, operatories, blockouts, minimum notice, booking window and buffers
+
+4.  Patient details
+
+    -   "I'm booking for someone else" option
+
+    -   First name, last name, date of birth, mobile, email, message
+
+    -   Insurance Yes/No; if Yes: carrier, subscriber full name, subscriber ID, subscriber date of birth
+
+    -   Out-of-network, not-accepted and other-insurance warning messages
+
+    -   Custom intake questions and optional file upload
+
+    -   SMS consent checkbox with Terms and Privacy Policy links
+
+    -   Optional OTP check of phone or email
+
+5.  Review and confirm
+
+    -   Summary of reason, provider, date, time and patient, with edit links
+
+    -   Slot held for 5 minutes during checkout to prevent double booking
+
+After booking
+
+-   Default confirmation page (add to calendar, address, directions, call button) or redirect to a custom thank-you URL, per clinic or per referrer, with a 0 to 20 second delay
+
+-   Confirmation email and SMS to the patient; alert to the clinic
+
+-   Reschedule and cancel links in every message, within the clinic's cancellation window
+
+Delivery and design
+
+-   Hosted page per clinic, with referrer tracking in the URL (example: ?referrer_id=2)
+
+-   Website embed: inline, popup, or floating "Book Online" button
+
+-   Three themes: Compact, Full Page, Reason First
+
+-   Branding: logo, header color, primary and secondary button colors
+
+-   Mobile-first, accessible (WCAG 2.1 AA), single language for now
+
+-   Footer with clinic name, phone, address and Terms link
+
+-   Step-by-step drop-off tracking that feeds Form Analytics
+
+4. Step and form builder
+
+Each clinic controls every step of its booking flow without code, since every practice runs differently.
+
+Steps
+
+-   Turn steps on or off: Provider, Insurance, Intake questions, Review
+
+-   Reorder steps: reason first, provider first, or date first
+
+-   Edit each step's title, subtitle and button text
+
+-   Choose how reasons display: grouped sections, tabs, or one list
+
+Fields
+
+-   Add custom fields: short text, long text, dropdown, radio, checkbox, date, phone, email, number, file upload, consent
+
+-   Per field: label, placeholder, help text, required or optional, default value, show or hide
+
+-   Drag to reorder; half-width or full-width layout
+
+-   Built-in fields (name, date of birth, phone, email) can be renamed or made optional, not deleted
+
+Conditional rules
+
+-   Show a field or step only when:
+
+    -   Patient type is New or Existing
+
+    -   A specific reason is selected
+
+    -   Insurance answer is Yes or No
+
+    -   A previous answer equals a set value
+
+    -   The booking is for someone else
+
+-   Per-reason questions (example: "Which tooth is hurting?" only for Emergency Exam)
+
+Messages and booking rules
+
+-   Information for patient, paid appointment note, no-insurance message
+
+-   Consent and legal text, custom Terms and Privacy Policy URLs
+
+-   Minimum notice (hours), booking window (days ahead), slot interval, buffer between visits, daily booking cap, cancellation window
+
+-   Accepting patients on/off, with a message shown while paused
+
+Preview and versions
+
+-   Live preview on mobile and desktop while editing
+
+-   Save draft, publish, roll back to an earlier version
+
+-   Starter templates by specialty (dental, physio, dermatology), published by Super Admin, that clinics copy and edit
+
+5. Clinic panel
+
+Eleven modules for running bookings day to day, all scoped to the clinic selected in the top bar.
+
+Top bar (every page)
+
+-   Clinic selector, Hide PHI switch, notifications bell, user menu
+
+-   Raise a Ticket (goes to Super Admin support queue)
+
+5.1 Home
+
+-   Date range: Today, This week, This month, custom
+
+-   Appointment trend chart with total and % change vs previous period
+
+-   Patient type split: New vs Returning
+
+-   Latest 5 appointments with View All
+
+5.2 Appointments
+
+-   Tabs: Appointments and Declined
+
+-   Columns: date scheduled, patient type, provider, patient, reason, source, appointment date and time, status
+
+-   Search by name, phone or email; filters for date, status, provider, reason, source, patient type
+
+-   Sort, show/hide columns, 10/25/50 per page, CSV export
+
+-   Statuses: Unconfirmed, Confirmed, Complete, Cancelled, No-show, Declined
+
+-   Calendar view by day and week, per provider
+
+-   Detail drawer: patient info, insurance, intake answers, files, source and UTM tags, message log, status history, internal notes
+
+-   Actions: confirm, reschedule, cancel, decline with reason, mark complete or no-show, resend confirmation
+
+-   Manual booking by staff for phone-in patients
+
+5.3 Reasons for visit
+
+-   List: drag to reorder, name, New/Returning badges, providers, operatories, duration, active switch, edit, duplicate, delete
+
+-   Editor: name, description, duration, patient type, providers, operatories, color, estimated value, online or staff-only, per-reason questions, per-reason redirect URL, notice override
+
+5.4 Providers
+
+-   List: photo, display name, ID, role, operatories, edit; selector for which providers show online
+
+-   Editor: display name, photo, role (Doctor, Hygienist, Assistant), bio, weekly hours, breaks, time off, operatories, reasons offered
+
+5.5 Schedule and operatories
+
+-   Clinic hours, holidays, blockouts
+
+-   Operatories (rooms or chairs): name, active, linked providers and reasons; stops a room being double booked
+
+5.6 Insurances
+
+-   Pick carriers from the master list; add custom carriers (comma-separated bulk add); remove
+
+-   Per-carrier status: in network, out of network, not accepted
+
+-   Settings: accept other insurance, optional insurance fields, extra questions, and warning messages for other, out-of-network and not-accepted plans
+
+5.7 Templates
+
+-   Email and SMS version for each event: booked (new patient), booked (returning), booking request, confirmation request, declined, cancelled, rescheduled, reminder 24 hours, reminder 2 hours, practice notification, patient form request, form acknowledgment, PMS not connected alert
+
+-   Editor: subject, rich text, placeholders ({{patient_name}}, {{practice_name}}, {{rfv_name}}, {{apt_date}}, {{start_time}}, {{provider_name}}, {{reschedule_link}}), SMS character count, send test, reset to default, on/off per event
+
+5.8 Form Analytics
+
+-   Date range and source filter
+
+-   Totals: form visits, appointments booked, drop-offs, conversion rate
+
+-   Drop-off by step and by reason, with counts and %
+
+-   Visit and booking heatmaps by weekday and hour, with peak times
+
+5.9 Performance
+
+-   Overview: bookings, completed, cancelled, no-shows, show rate, change vs previous period
+
+-   By source: visits, bookings, conversion rate for Google Ads, Google Business Profile, Reserve with Google, Website, custom referrers
+
+-   Ad ROI: monthly spend per source entered by the clinic or agency; cost per booking and per completed visit
+
+-   Patients: new vs returning trend, new patient growth
+
+-   Reasons: bookings, completion rate, estimated value
+
+-   Providers: bookings, utilization (booked vs available hours), completion rate
+
+-   Timing: average lead time from booking to visit; fill rate for next 7 and 14 days
+
+-   Export as CSV or PDF; scheduled monthly report by email
+
+5.10 Settings
+
+-   Appearance: logo, practice name, phone, email, address, description, theme, colors, live preview
+
+-   Widgets: default link, custom slug, embed code, after-booking redirect URL and delay
+
+-   Confirmation: which statuses count as confirmed, send confirm prompt or not, statuses written back to the PMS
+
+-   Legal and compliance: Privacy Policy and Terms (edit, view, copy, on/off) or custom URLs
+
+-   Booking flow and scheduling: opens the step and form builder (section 4), auto sync, block scheduling, blockouts to skip, unarchive patient on booking
+
+-   Notifications: SMS alerts to clinic, notify patient after booking, reminders on/off, extra alert emails, alternate SMS number
+
+-   Referrer: list (name, ID, source type, redirect URL), add, edit, copy tracked link, delete
+
+-   Reserve with Google: on/off, website URL
+
+-   Payment: Stripe connect (later phase)
+
+-   Users: invite staff, assign role, deactivate
+
+5.11 Support
+
+-   Raise a Ticket with category, priority, screenshot; ticket history and replies
+
+6. Super admin panel
+
+The platform owner's control room: onboard and manage every clinic, set what each can use, and watch the whole platform.
+
+6.1 Dashboard
+
+-   Clinics: active, trial, paused, churned
+
+-   Platform bookings, conversion rate and show rate this period vs last
+
+-   Revenue: MRR, new and churned MRR, overdue invoices
+
+-   SMS and email usage vs credits
+
+-   Health alerts: failed messages, sync errors, clinics with zero bookings in 7 days
+
+6.2 Clinics
+
+-   List: name, plan, status, owner, created date, bookings this month, last login
+
+-   Add clinic wizard: details, booking slug, time zone, owner invite, plan, starter template by specialty, import reasons and providers (CSV)
+
+-   Edit, pause, suspend, soft delete with 30-day restore
+
+-   Clone settings from another clinic
+
+-   Log in as clinic (impersonation), reason required and logged
+
+6.3 Clinic groups
+
+-   Group several locations under one owner (multi-location practices)
+
+-   Group-level users and combined reports
+
+6.4 Plans and billing
+
+-   Plans with limits: locations, providers, SMS credits, modules
+
+-   Trials, coupons, invoices, payment status, dunning emails
+
+-   Billing through Stripe (later phase); manual invoicing until then
+
+6.5 Feature flags
+
+-   Turn modules on or off per plan or per clinic: Performance, Reserve with Google, payments, OTP, file uploads, custom domain
+
+6.6 Users
+
+-   All users across clinics: role, clinics, last login, 2FA status
+
+-   Reset password, force 2FA, deactivate
+
+-   Super admin team users: Super Admin and Support Agent roles
+
+6.7 Global libraries
+
+-   Master insurance carrier list that clinics pick from
+
+-   Default email and SMS templates
+
+-   Starter booking flows and default reasons by specialty
+
+-   Legal page templates (Privacy Policy, Terms)
+
+6.8 Messaging
+
+-   SMS and email provider settings, sender names and numbers
+
+-   SMS registration status per clinic (US 10DLC), credit limits, delivery logs, bounce and opt-out lists
+
+6.9 Integrations
+
+-   Reserve with Google feed status per clinic
+
+-   PMS connectors and sync health (later phase)
+
+-   Analytics and ad tracking defaults (GA4, Google Ads, Meta Pixel)
+
+6.10 Support desk
+
+-   Tickets from clinics: assign, reply, status, priority, response time
+
+-   Announcement banner to all or selected clinics
+
+6.11 Platform analytics
+
+-   Compare clinics side by side: bookings, conversion, show rate, source mix, ad cost per booking
+
+-   Growth: new clinics per month, bookings per clinic, retention
+
+-   Export CSV
+
+6.12 Audit log and system settings
+
+-   Audit log: who did what, when, from which IP; patient data access log
+
+-   Platform branding and white-label: logo, colors, "Powered by" text, email sender domain
+
+-   Custom domains per clinic, data retention period, backups, maintenance mode
+
+7. Notifications, tracking and integrations
+
+Every booking triggers messages to the patient and clinic, and carries its marketing source through to reports. In the prototype these are simulated.
+
+Notifications
+
+-   Channels: email and SMS, each event on or off per clinic
+
+-   To patient: booking received, confirmed, confirmation request, reminders (24 hours and 2 hours, times adjustable), rescheduled, cancelled, declined, form request
+
+-   To clinic: new booking alert (email and SMS), cancellation alert, daily summary of tomorrow's schedule
+
+-   Two-way SMS: reply C to confirm; STOP and HELP handled automatically
+
+-   Quiet hours: no SMS between 9 pm and 8 am patient local time
+
+-   Delivery log per message: sent, delivered, failed, opened
+
+Tracking
+
+-   Referrer ID per source, with a tracked booking link for each
+
+-   UTM tags (source, medium, campaign, term, content) and click IDs (gclid, fbclid) saved on the appointment
+
+-   Thank-you page redirect for Google Ads, GA4 and Meta conversion tags
+
+-   Tag Manager events: step viewed, reason selected, slot selected, booking completed
+
+-   Server-side conversions (Google Ads offline conversions, Meta Conversions API) in a later phase
+
+-   No patient health data is ever sent to ad or analytics platforms
+
+Integrations
+
+  -----------------------------------------------------------------------------------------------------
+  Integration                                       Purpose                                     Phase
+  ------------------------------------------------- ------------------------------------------- -------
+  Email (SendGrid or Amazon SES)                    Transactional email                         2
+
+  SMS (Twilio)                                      Texts and two-way confirm                   2
+
+  Google Tag Manager, GA4, Google Ads, Meta Pixel   Conversion tracking                         2
+
+  Reserve with Google                               Book from Google Search and Maps            3
+
+  PMS (OpenDental, Dentrix, Eaglesoft)              Sync patients, appointments, availability   3
+
+  Google Calendar, Outlook                          Provider calendar sync                      3
+
+  Stripe                                            Deposits and paid appointments              3
+
+  Webhooks and REST API                             Push bookings to CRM, n8n, Zapier           3
+  -----------------------------------------------------------------------------------------------------
+
+8. Security and compliance
+
+Production must meet HIPAA for US clinics; the prototype uses demo data only.
+
+-   Hosting: HIPAA-eligible cloud with a signed BAA; BAAs with every vendor that touches patient data (SMS, email, storage)
+
+-   Encryption: TLS 1.2+ in transit, AES-256 at rest, including file uploads
+
+-   Clinic isolation: every record tied to one clinic and enforced at database level, so no clinic can read another's data
+
+-   Login: email and password, 2FA, 30-minute idle timeout, strong password rules; SSO later
+
+-   Access control: roles as in section 2; least access by default
+
+-   Audit trail: logins, patient record views, exports, setting and template changes
+
+-   PHI on screen and in messages: Hide PHI mode; option to leave the visit reason out of SMS
+
+-   Consent records: SMS consent and Terms version stored with timestamp and IP
+
+-   Abuse protection: rate limits, invisible bot check, optional OTP on the booking widget
+
+-   Backups and uptime: daily backups kept 30 days, point-in-time restore, 99.9% uptime target
+
+-   Patient rights: export or delete a patient's data on request; clinic-level retention period
+
+-   Before launch: third-party penetration test and fixes
+
+9. Delivery phases
+
+Three phases, each closed by a sign-off before the next starts.
+
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Phase                        Delivers                                                                                                                                                                                                                            Exit gate
+  ---------------------------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ---------------------------------------------------------
+  1. Clickable prototype       Patient widget (all steps), clinic panel (all modules), super admin core screens, demo data for 2 clinics, simulated notifications and integrations                                                                                 Sign-off on flows, screens and scope
+
+  2. Production MVP            Real logins and roles, multi-clinic database, booking engine, step and form builder, email and SMS, referrer and UTM tracking, Form Analytics, Performance, super admin clinics, users, plans (manual billing), security baseline   Pilot live with 1 to 3 clinics; penetration test passed
+
+  3. Integrations and growth   PMS sync, Reserve with Google, Stripe payments and billing, calendar sync, API and webhooks, server-side conversions, custom domains and white-label, extra languages                                                               Each integration live with at least one clinic
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Suggested Phase 2 stack, to confirm before build: Next.js, Node API, PostgreSQL with row-level security, a job queue for messages and reminders.
+
+10. Out of scope and open questions
+
+Out of scope
+
+-   Native iOS and Android apps (the widget and panels are mobile web)
+
+-   Clinical records, charting, treatment plans, insurance claims
+
+-   Real-time insurance eligibility checks
+
+-   Telehealth video visits
+
+-   Patient portal with its own login
+
+-   Bulk marketing campaigns and review management
+
+Open questions
+
+-   ☐ Is "Kivi Health" the platform brand and domain?
+
+-   ☐ Target markets: US only (HIPAA), or also India or UAE with their own data rules?
+
+-   ☐ Does the reference flow have a Step 4 review screen, or does it book at Step 3?
+
+-   ☐ Which PMS to integrate first?
+
+-   ☐ Reserve with Google needs Google booking partner approval: apply directly or go through an approved partner?
+
+-   ☐ Plans and pricing limits for Phase 2
+
+-   ☐ SMS sender: one shared platform number pool or a number per clinic?
+
+-   ☐ Prototype review: shareable link with demo data for clients, or internal only?
