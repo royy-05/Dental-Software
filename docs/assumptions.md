@@ -18,3 +18,13 @@ Where the Scope of Work (docs/spec.txt) was ambiguous, the prototype uses these 
 - When Hide PHI is on, CSV exports mask patient name, phone and email.
 - The calendar's hours run from the clinic's earliest opening to its latest closing across the week. Week view colour-codes providers in each day column rather than giving each provider a lane.
 - Uploaded files show only name and size (no file storage in the prototype).
+
+## Clinic panel: Reasons, Providers, Schedule, Insurances, Templates
+- The links stored on reasons (providers and rooms) and on providers (rooms) are the source of truth. The reverse lists on providers and rooms are rebuilt on every save so they never drift.
+- Duplicating a reason creates an inactive copy right after the original, so it doesn't appear online until someone turns it on.
+- A reason must have at least one provider to be saved.
+- Template "rich text" is limited to `**bold**`, `_italic_` and `[text](url)`, shown as HTML in the email preview and stripped to plain text for SMS.
+- Template test sends go to the signed-in user's email (email) or the clinic's alternate SMS number, falling back to the clinic phone (SMS), and use the simulated delivery outcome.
+- Template previews use a fake sample patient ("Alex Sample") with the clinic's first reason and provider.
+- Provider photos are kept in browser storage only when under 150 KB; otherwise initials are shown.
+- Custom insurance carriers start as "In network".
