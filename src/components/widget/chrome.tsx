@@ -21,7 +21,7 @@ export function WidgetHeader({ clinic, compact }: { clinic: Clinic; compact?: bo
           </span>
         )}
         <div className="min-w-0">
-          <p className={cn("truncate font-semibold", big ? "text-xl" : "text-base")}>{clinic.name}</p>
+          <h1 className={cn("truncate font-semibold", big ? "text-xl" : "text-base")}>{clinic.name}</h1>
           {(big || theme === "full_page") && !compact && <p className="truncate text-sm text-white/90">{clinic.description}</p>}
         </div>
         {theme === "full_page" && !compact && (
