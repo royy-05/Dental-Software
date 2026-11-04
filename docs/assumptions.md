@@ -43,3 +43,15 @@ Where the Scope of Work (docs/spec.txt) was ambiguous, the prototype uses these 
 - Only a clinic owner can invite or assign the Clinic Owner role. Inviting an email that already exists adds that user to the clinic instead of creating a new user.
 - When a clinic replies to a pending, resolved or closed ticket, it goes back to "open".
 - PDF export uses the browser print dialog with a print stylesheet. The monthly report email is a setting only. Stripe connect is a disabled "later phase" button. Custom-domain DNS is not checked. Logo uploads are stored as a data URL, capped at 200 KB.
+
+## Super admin panel
+- MRR counts only active clinics at plan price; trials are $0 and paused or suspended clinics are not billed. Churned MRR is the plan price of churned clinics.
+- Platform conversion rate = booked widget sessions ÷ all widget sessions. Show rate = completed ÷ (completed + no-show) for visits in the period. The dashboard compares the last 30 days with the 30 days before.
+- "Zero bookings in 7 days" alerts cover every clinic that is not churned, including paused ones.
+- Ad cost per booking pro-rates monthly ad spend to the selected window and divides by bookings from paid sources (Google Ads + custom campaigns).
+- Retention in Platform analytics treats a churned clinic as lost from its last-login month (logo retention).
+- New clinics get a default "Room 1" operatory, referrers 1–4 (Google Ads, Google Business Profile, Reserve with Google, Website), copies of the global default templates, and flow v1 from the chosen starter template. Imported providers get default weekday 08:00–17:00 hours and are linked to every reason.
+- Clone settings copies branding, clinic hours, settings, insurance settings and the published booking flow (as a new version), but not reasons, providers or appointments.
+- Platform users invited from admin must set up 2FA at first login. Dunning emails are logged in the delivery log as clinic-bound emails using the "test" event type.
+- Super Admins can edit everything. Support Agents can view clinics, groups, users, libraries, messaging logs, integrations, analytics and audit, can impersonate (reason required) and reset demo data, but cannot edit or delete anything.
+- Owner invites, password-reset emails, DNS verification, PMS retry sync and backups are simulated with toasts or timestamps. The flow part of starter templates comes from the specialty default; clinics edit their copy in the builder.
