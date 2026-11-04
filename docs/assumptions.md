@@ -28,3 +28,18 @@ Where the Scope of Work (docs/spec.txt) was ambiguous, the prototype uses these 
 - Template previews use a fake sample patient ("Alex Sample") with the clinic's first reason and provider.
 - Provider photos are kept in browser storage only when under 150 KB; otherwise initials are shown.
 - Custom insurance carriers start as "In network".
+
+## Clinic panel: Form Analytics, Performance, Settings, Support
+- Performance "bookings" count appointments whose visit date falls in the range, excluding declined requests. "By source" and "Ad ROI" count bookings by the date they were made.
+- Show rate = completed ÷ (completed + no-show). Completion rate = completed ÷ (completed + no-show + cancelled) among visits already past.
+- A reason's estimated value = the reason's value × bookings that weren't cancelled and weren't no-shows.
+- Provider utilization = booked minutes ÷ available minutes. Available = provider hours ∩ clinic hours, minus breaks, time off and holidays. Fill rate uses the same formula for the next 7 or 14 days.
+- Form Analytics drop-off by step uses each visit's furthest step. Insurance and intake count as part of the Patient details step.
+- Heatmaps use the clinic-local hour and weekday of each widget visit.
+- Bookings from "Staff (manual)" have no widget visits, so their conversion shows as "—".
+- Ad spend is entered per month for the current and previous 2 months.
+- The custom booking slug is validated for uniqueness and used in embed code, but the hosted page still resolves by the default slug.
+- Editing the Terms text bumps `termsVersion` to today's date.
+- Only a clinic owner can invite or assign the Clinic Owner role. Inviting an email that already exists adds that user to the clinic instead of creating a new user.
+- When a clinic replies to a pending, resolved or closed ticket, it goes back to "open".
+- PDF export uses the browser print dialog with a print stylesheet. The monthly report email is a setting only. Stripe connect is a disabled "later phase" button. Custom-domain DNS is not checked. Logo uploads are stored as a data URL, capped at 200 KB.
