@@ -108,7 +108,7 @@ const INTAKE: Record<Specialty, FormField[]> = {
   dental: [
     { id: "q_last_visit", type: "dropdown", label: "When was your last dental visit?", required: false, hidden: false, width: "half", options: ["Within 6 months", "6-12 months", "1-2 years", "More than 2 years", "Never"], conditions: [{ type: "patient_type", value: "new" }] },
     { id: "q_anxiety", type: "radio", label: "Do you feel nervous about dental visits?", required: false, hidden: false, width: "half", options: ["No", "A little", "Very"], conditions: [] },
-    { id: "q_xray", type: "file", label: "Upload recent X-rays (optional)", required: false, hidden: false, width: "full", conditions: [{ type: "patient_type", value: "new" }], helpText: "PDF or image, up to 10 MB." },
+    { id: "q_xray", type: "file", label: "Upload recent X-rays", required: false, hidden: false, width: "full", conditions: [{ type: "patient_type", value: "new" }], helpText: "PDF or image, up to 10 MB." },
   ],
   physio: [
     { id: "q_pain", type: "number", label: "Pain level today (0-10)", required: false, hidden: false, width: "half", conditions: [] },
@@ -117,7 +117,7 @@ const INTAKE: Record<Specialty, FormField[]> = {
   ],
   dermatology: [
     { id: "q_concern", type: "long_text", label: "Describe your skin concern", required: false, hidden: false, width: "full", conditions: [] },
-    { id: "q_photo", type: "file", label: "Upload a photo (optional)", required: false, hidden: false, width: "full", conditions: [], helpText: "Helps the doctor prepare." },
+    { id: "q_photo", type: "file", label: "Upload a photo", required: false, hidden: false, width: "full", conditions: [], helpText: "Helps the doctor prepare." },
   ],
 };
 

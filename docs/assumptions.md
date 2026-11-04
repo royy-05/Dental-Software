@@ -55,3 +55,17 @@ Where the Scope of Work (docs/spec.txt) was ambiguous, the prototype uses these 
 - Platform users invited from admin must set up 2FA at first login. Dunning emails are logged in the delivery log as clinic-bound emails using the "test" event type.
 - Super Admins can edit everything. Support Agents can view clinics, groups, users, libraries, messaging logs, integrations, analytics and audit, can impersonate (reason required) and reset demo data, but cannot edit or delete anything.
 - Owner invites, password-reset emails, DNS verification, PMS retry sync and backups are simulated with toasts or timestamps. The flow part of starter templates comes from the specialty default; clinics edit their copy in the builder.
+
+## Patient widget and step/form builder
+- Insurance and intake questions are sections of the Patient details screen (as in section 3), not separate screens. The builder still turns them on and off and sets their titles like steps.
+- Per-reason questions always show for their reason, even with the Intake step off. They save immediately in the builder (not versioned) and apply to the live widget.
+- With "Date first", the calendar shows times open for any bookable reason. The next step then lists only reasons that fit the chosen time.
+- The 5-minute hold starts when a time slot is selected. When it expires the patient is asked to re-check the time; if it's gone they go back to the calendar.
+- Thank-you redirect order is referrer redirect URL, then reason redirect URL, then the clinic's after-booking URL. The delay is capped at 0–20 s, and 0 redirects immediately.
+- Booking source comes from the `referrer_id` referrer's source type; with no valid referrer it is "Direct link".
+- The Terms and Privacy links use custom URLs when set, otherwise they open the clinic's built-in legal text in a dialog.
+- OTP and file uploads appear only when both the plan feature flag and the builder toggle are on. OTP codes are shown in a toast; no text is sent.
+- Applying a starter template replaces the draft but keeps the accepting-patients setting. Template default reasons are added inactive with no providers, so they aren't bookable until providers are assigned.
+- Rolling back publishes the old version as a new version number, so history is never lost.
+- `?theme=compact|full_page|reason_first` on the booking URL overrides the theme for demos, and `?embed=1` shows a compact header for iframe use.
+- In /embed-demo the iframe and the parent page each hold their own copy of the store in memory (shared localStorage). Reload the clinic panel after booking inside an iframe.
