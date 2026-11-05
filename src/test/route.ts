@@ -6,6 +6,10 @@
 import { NextRequest } from "next/server";
 import { prisma, withPlatform } from "@/server/db";
 
+/** Parsed JSON body; tests index into it freely. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ApiJson = any;
+
 type Route = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>;
 
 export function setTestSession(sid: string | null) {
@@ -35,7 +39,7 @@ export async function as(email: string | null) {
 export async function call(
   route: Route,
   opts: { method?: string; path?: string; params?: Record<string, string>; body?: unknown; query?: Record<string, string>; ip?: string; headers?: Record<string, string> } = {},
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: ApiJson }> {
   const url = new URL(opts.path ?? "/api/test", "http://localhost:3000");
   for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v);
   const req = new NextRequest(url, {
