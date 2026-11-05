@@ -203,3 +203,111 @@ export const zBookingBody = z.object({
   /** Honeypot: real browsers leave it empty. */
   website: z.string().max(200).optional(),
 });
+
+// ---------- clinic configuration ----------
+
+export const zReasonBody = z.object({
+  name: zName(120),
+  description: zText(300),
+  longDescription: zText(5000),
+  duration: z.number().int().min(5).max(480),
+  patientType: z.enum(["new", "existing", "both"]),
+  providerIds: z.array(zId).max(100),
+  operatoryIds: z.array(zId).max(100),
+  color: zColor,
+  estimatedValue: z.number().int().min(0).max(1_000_000),
+  visibility: z.enum(["online", "staff_only"]),
+  active: z.boolean(),
+  questions: z.array(zFormField).max(30),
+  redirectUrl: zOptUrl,
+  noticeOverrideHours: z.number().int().min(0).max(24 * 60).nullable().optional(),
+});
+
+export const zBreak = z.object({ id: zId.optional(), weekday: z.union([zWeekday, z.literal("all")]), start: zHm, end: zHm, label: zText(80) });
+export const zTimeOff = z.object({ id: zId.optional(), start: zDay, end: zDay, reason: zText(200) });
+
+export const zProviderBody = z.object({
+  displayName: zName(120),
+  externalId: zText(60),
+  photoUrl: z.string().max(220_000).optional().nullable(),
+  role: z.enum(["Doctor", "Hygienist", "Assistant"]),
+  bio: zText(2000),
+  weeklyHours: zWeeklyHours,
+  breaks: z.array(zBreak).max(30),
+  timeOff: z.array(zTimeOff).max(100),
+  operatoryIds: z.array(zId).max(100),
+  reasonIds: z.array(zId).max(200),
+  showOnline: z.boolean(),
+  active: z.boolean(),
+  color: zColor,
+});
+
+export const zOperatoryBody = z.object({ name: zName(80), active: z.boolean(), providerIds: z.array(zId).max(100), reasonIds: z.array(zId).max(200) });
+export const zHoliday = z.object({ date: zDay, name: zName(80) });
+export const zBlockout = z.object({ label: zName(80), start: zWall, end: zWall, providerId: zId.optional(), operatoryId: zId.optional() });
+export const zReferrerBody = z.object({ name: zName(80), sourceType: zReferrerSource, redirectUrl: zOptUrl });
+export const zTemplateBody = z.object({ subject: zText(200).optional(), body: zText(5000).optional(), enabled: z.boolean().optional() });
+export const zTicketBody = z.object({ subject: z.string().trim().min(4).max(200), category: z.enum(["bug", "question", "billing", "feature_request", "integrations", "other"]), priority: z.enum(["low", "normal", "high", "urgent"]), body: z.string().trim().min(10).max(5000), screenshotName: zText(200).optional() });
+export const zTicketStatus = z.enum(["open", "pending", "resolved", "closed"]);
+export const zTicketPriority = z.enum(["low", "normal", "high", "urgent"]);
+export const zMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+
+// ---------- super admin ----------
+
+export const zSlug = z.string().regex(/^[a-z0-9-]{3,60}$/, "Lower-case letters, numbers and dashes");
+export const zCsvRows = z.array(z.record(z.string().max(60), z.string().max(500))).max(500);
+export const zNewClinicBody = z.object({
+  name: zName(),
+  slug: zSlug,
+  specialty: zSpecialty,
+  timeZone: z.string().min(3).max(60),
+  phone: zText(40),
+  email: zEmail.or(z.literal("")),
+  address: zText(300),
+  planId: zId,
+  trial: z.boolean(),
+  owner: z.discriminatedUnion("mode", [z.object({ mode: z.literal("existing"), userId: zId }), z.object({ mode: z.literal("invite"), name: zName(), email: zEmail })]),
+  starterTemplateId: zId.optional(),
+  importReasons: zCsvRows.default([]),
+  importProviders: zCsvRows.default([]),
+});
+export const zClinicAdminPatch = z
+  .object({
+    name: zName(),
+    slug: zSlug,
+    specialty: zSpecialty,
+    timeZone: z.string().min(3).max(60),
+    phone: zText(40),
+    email: zEmail.or(z.literal("")),
+    address: zText(300),
+    status: zClinicStatus,
+    planId: zId,
+    groupId: zId.nullable(),
+    ownerUserId: zId,
+    trialEndsAt: z.string().datetime().nullable(),
+    featureOverrides: z.partialRecord(zFeatureKey, z.boolean().nullable()),
+    smsRegistration: z.enum(["approved", "pending", "rejected", "not_started"]),
+    customDomain: z.string().max(253).nullable(),
+    retentionDays: z.number().int().min(30).max(3650).nullable(),
+    rwg: z.object({ enabled: z.boolean(), websiteUrl: zText(2048), feedStatus: z.enum(["healthy", "warning", "error", "off"]) }).partial(),
+    pms: z.object({ name: zText(60), connected: z.boolean(), lastSyncAt: z.string().datetime().optional(), syncError: zText(300).optional() }).partial(),
+  })
+  .partial();
+export const zPlanPatch = z.object({ name: zName(60), priceMonthly: z.number().int().min(0).max(100_000), limits: z.object({ locations: z.number().int().min(1).max(1000), providers: z.number().int().min(1).max(10_000), smsCredits: z.number().int().min(0).max(10_000_000), modules: z.array(zFeatureKey) }).partial() }).partial();
+export const zPlatformSettings = z.object({
+  branding: z.object({ platformName: zName(60), logoUrl: z.string().max(300_000).optional(), primaryColor: zColor, poweredByText: zText(80), emailSenderDomain: zText(253) }),
+  dataRetentionDays: z.number().int().min(30).max(3650),
+  backups: z.object({ enabled: z.boolean(), lastBackupAt: z.string(), retentionDays: z.number().int().min(1).max(3650) }),
+  maintenanceMode: z.boolean(),
+  messaging: z.object({
+    emailProvider: z.enum(["SendGrid", "Amazon SES"]),
+    smsProvider: z.literal("Twilio"),
+    emailSenderName: zText(80),
+    emailFrom: zText(254),
+    smsNumberPool: z.array(zText(32)).max(50),
+    quietHoursStart: z.number().int().min(0).max(23),
+    quietHoursEnd: z.number().int().min(0).max(23),
+    smsCreditLimitDefault: z.number().int().min(0).max(10_000_000),
+  }),
+  integrations: z.object({ ga4MeasurementId: zText(40), googleAdsConversionId: zText(40), metaPixelId: zText(40), gtmContainerId: zText(40) }),
+});

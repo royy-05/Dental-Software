@@ -18,6 +18,7 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 120_000,
     env: {
+      TZ: "UTC",
       ...(testDb ? { DATABASE_URL: testDb } : {}),
       ...(testDirect ? { DIRECT_DATABASE_URL: testDirect } : {}),
       EMAIL_DRIVER: "memory",

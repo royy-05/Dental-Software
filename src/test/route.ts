@@ -49,7 +49,15 @@ export async function call(
   });
   const res = await route(req, { params: Promise.resolve(opts.params ?? {}) });
   const text = await res.text();
-  return { status: res.status, json: text ? JSON.parse(text) : null };
+  let json: ApiJson = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = text; // CSV and other non-JSON bodies
+    }
+  }
+  return { status: res.status, json };
 }
 
 export const EMAILS = {
