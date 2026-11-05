@@ -1,26 +1,36 @@
 "use client";
 
-import { useEffect } from "react";
-import { useApp } from "@/store/app";
+import { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ApiClientError } from "@/lib/api/client";
 
-/** Rehydrates the persisted demo store from localStorage once on the client. */
+/** App-wide providers: TanStack Query (server data), tooltips and toasts. */
 export function AppProviders({ children }: { children: React.ReactNode }) {
-  useEffect(() => {
-    const done = () => useApp.getState().setHydrated();
-    const unsub = useApp.persist.onFinishHydration(done);
-    Promise.resolve(useApp.persist.rehydrate()).finally(done);
-    return unsub;
-  }, []);
+  const [client] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 15_000,
+            refetchOnWindowFocus: true,
+            retry: (count, err) => !(err instanceof ApiClientError && err.status < 500) && count < 2,
+          },
+        },
+      }),
+  );
   return (
-    <TooltipProvider delayDuration={200}>
-      {children}
-      <Toaster richColors position="top-right" closeButton />
-    </TooltipProvider>
+    <QueryClientProvider client={client}>
+      <TooltipProvider delayDuration={200}>
+        {children}
+        <Toaster richColors position="top-right" closeButton />
+      </TooltipProvider>
+    </QueryClientProvider>
   );
 }
 
+/** Kept for components that waited for the old localStorage store; server data is loaded through queries now. */
 export function useHydrated() {
-  return useApp((s) => s.hydrated);
+  return true;
 }

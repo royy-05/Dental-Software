@@ -24,13 +24,16 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import type { FeatureKey } from "@/types";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { signOut } from "next-auth/react";
+import type { AppNotification, Announcement, FeatureKey } from "@/types";
 import { ROLE_LABELS } from "@/types";
-import { can, featureEnabled, isPlatformRole, type Permission } from "@/lib/permissions";
+import { can, type Permission } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
-import { useAccessibleClinics, useApp, useCurrentClinic, useCurrentUser, useEffectiveRole } from "@/store/app";
-import { useHydrated } from "@/components/shared/hydration";
-import { LoadingState } from "@/components/shared/states";
+import { api } from "@/lib/api/client";
+import { qk, useAccessibleClinics, useApiMutation, useClinicBundle, useClinicId, useCurrentClinic, useCurrentUser, useEffectiveRole, useMe } from "@/lib/api/session";
+import { useUi } from "@/store/ui";
+import { ErrorState, LoadingState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -73,9 +76,8 @@ export const CLINIC_NAV: NavItem[] = [
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const role = useEffectiveRole();
-  const clinic = useCurrentClinic();
-  const plans = useApp((s) => s.db.plans);
-  const items = CLINIC_NAV.filter((i) => can(role, i.perm) && (!i.feature || featureEnabled(clinic, plans, i.feature)));
+  const features = useClinicBundle().data?.features;
+  const items = CLINIC_NAV.filter((i) => can(role, i.perm) && (!i.feature || !!features?.[i.feature]));
   return (
     <nav aria-label="Clinic modules" className="flex flex-col gap-0.5">
       {items.map((i) => {
@@ -101,10 +103,18 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function NotificationsBell() {
-  const clinicId = useApp((s) => s.session.clinicId);
-  const all = useApp((s) => s.db.notifications);
-  const mutate = useApp((s) => s.mutate);
-  const items = all.filter((n) => n.clinicId === clinicId).slice(0, 15);
+  const clinicId = useClinicId();
+  const { data } = useQuery({
+    queryKey: qk.clinicRes(clinicId, "notifications"),
+    queryFn: () => api<AppNotification[]>(`/api/clinics/${clinicId}/notifications`, { background: true }),
+    enabled: !!clinicId,
+    refetchInterval: 60_000,
+  });
+  const markRead = useApiMutation((body: { ids?: string[]; all?: boolean }) => api(`/api/clinics/${clinicId}/notifications`, { body }), {
+    invalidate: [qk.clinicRes(clinicId, "notifications")],
+    errorToast: false,
+  });
+  const items = (data ?? []).slice(0, 15);
   const unread = items.filter((n) => !n.read).length;
   return (
     <Popover>
@@ -124,7 +134,7 @@ function NotificationsBell() {
           <Button
             variant="link"
             size="xs"
-            onClick={() => mutate((db) => db.notifications.forEach((n) => n.clinicId === clinicId && (n.read = true)))}
+            onClick={() => markRead.mutate({ all: true })}
           >
             Mark all read
           </Button>
@@ -136,7 +146,7 @@ function NotificationsBell() {
               <Link
                 href={n.href ?? "/clinic"}
                 className="block px-4 py-2.5 hover:bg-muted"
-                onClick={() => mutate((db) => void (db.notifications.find((x) => x.id === n.id)!.read = true))}
+                onClick={() => !n.read && markRead.mutate({ ids: [n.id] })}
               >
                 <p className="text-sm font-medium">{n.title}</p>
                 <p className="text-xs text-muted-foreground">{n.body}</p>
@@ -152,9 +162,10 @@ function NotificationsBell() {
 
 function UserMenu() {
   const user = useCurrentUser();
+  const me = useMe().data;
   const role = useEffectiveRole();
-  const logout = useApp((s) => s.logout);
   const router = useRouter();
+  const qc = useQueryClient();
   if (!user) return null;
   return (
     <DropdownMenu>
@@ -177,18 +188,18 @@ function UserMenu() {
             <UserCog className="h-4 w-4" /> Staff users
           </DropdownMenuItem>
         )}
-        {isPlatformRole(user.role) && (
+        {me?.platformRole && !me.impersonation && (
           <DropdownMenuItem onSelect={() => router.push("/admin")}>
             <ShieldAlert className="h-4 w-4" /> Super admin panel
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onSelect={() => router.push("/login")}>
-          <UserCog className="h-4 w-4" /> Switch role
+        <DropdownMenuItem onSelect={() => router.push("/account/security")}>
+          <UserCog className="h-4 w-4" /> Account security
         </DropdownMenuItem>
         <DropdownMenuItem
-          onSelect={() => {
-            logout();
-            router.push("/login");
+          onSelect={async () => {
+            qc.clear();
+            await signOut({ redirectTo: "/login" });
           }}
         >
           <LogOut className="h-4 w-4" /> Log out
@@ -199,15 +210,24 @@ function UserMenu() {
 }
 
 function Banners() {
-  const imp = useApp((s) => s.session.impersonation);
-  const stop = useApp((s) => s.stopImpersonation);
+  const imp = useMe().data?.impersonation;
   const clinic = useCurrentClinic();
-  const announcements = useApp((s) => s.db.announcements);
+  const clinicId = useClinicId();
+  const { data: announcements } = useQuery({
+    queryKey: qk.clinicRes(clinicId, "announcements"),
+    queryFn: () => api<Announcement[]>(`/api/clinics/${clinicId}/announcements`, { background: true }),
+    enabled: !!clinicId,
+    staleTime: 5 * 60_000,
+  });
   const [dismissed, setDismissed] = useState<string[]>([]);
   const router = useRouter();
-  const visible = announcements.filter(
-    (a) => a.active && !dismissed.includes(a.id) && clinic && (a.clinicIds === "all" || a.clinicIds.includes(clinic.id)),
-  );
+  const qc = useQueryClient();
+  const stop = async () => {
+    await api("/api/admin/impersonation", { method: "DELETE" });
+    qc.clear();
+    router.push("/admin/clinics");
+  };
+  const visible = (announcements ?? []).filter((a) => !dismissed.includes(a.id));
   return (
     <>
       {imp && (
@@ -219,10 +239,7 @@ function Banners() {
           <Button
             size="xs"
             variant="outline"
-            onClick={() => {
-              stop();
-              router.push("/admin/clinics");
-            }}
+            onClick={stop}
           >
             Exit impersonation
           </Button>
@@ -246,31 +263,29 @@ function Banners() {
 }
 
 export function ClinicShell({ children }: { children: React.ReactNode }) {
-  const hydrated = useHydrated();
-  const user = useCurrentUser();
-  const imp = useApp((s) => s.session.impersonation);
+  const me = useMe();
+  const imp = me.data?.impersonation;
   const clinics = useAccessibleClinics();
-  const clinicId = useApp((s) => s.session.clinicId);
-  const setClinic = useApp((s) => s.setClinic);
-  const hidePhi = useApp((s) => s.session.hidePhi);
-  const setHidePhi = useApp((s) => s.setHidePhi);
+  const clinicId = useClinicId();
+  const setClinic = useUi((s) => s.setClinicId);
+  const hidePhi = useUi((s) => s.hidePhi);
+  const setHidePhi = useUi((s) => s.setHidePhi);
+  const qc = useQueryClient();
   const router = useRouter();
-  const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const platformWithoutImp = user && isPlatformRole(user.role) && !imp;
+  // Support agents only reach clinics through impersonation; platform users without clinics go to the admin panel.
+  const noClinicAccess = me.data && clinics.length === 0;
 
   useEffect(() => {
-    if (!hydrated) return;
-    if (!user) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-    else if (platformWithoutImp) router.replace("/admin/clinics");
-  }, [hydrated, user, platformWithoutImp, router, pathname]);
+    if (noClinicAccess && me.data?.platformRole) router.replace("/admin/clinics");
+  }, [noClinicAccess, me.data?.platformRole, router]);
 
-  useEffect(() => {
-    if (hydrated && clinics.length && !clinics.some((c) => c.id === clinicId)) setClinic(clinics[0].id);
-  }, [hydrated, clinics, clinicId, setClinic]);
-
-  if (!hydrated || !user || platformWithoutImp) return <LoadingState label="Loading clinic panel…" className="mx-auto max-w-3xl pt-20" />;
+  if (me.isError) return <ErrorState className="mx-auto max-w-3xl pt-20" onRetry={() => me.refetch()} />;
+  if (!me.data || noClinicAccess) {
+    if (me.data && !me.data.platformRole) return <ErrorState className="mx-auto max-w-3xl pt-20" title="No clinic access" message="Your account is not linked to a clinic yet. Ask your clinic owner to invite you." />;
+    return <LoadingState label="Loading clinic panel…" className="mx-auto max-w-3xl pt-20" />;
+  }
 
   const sidebar = (
     <div className="flex h-full flex-col gap-4">
@@ -279,7 +294,7 @@ export function ClinicShell({ children }: { children: React.ReactNode }) {
         Kivi Health
       </Link>
       <NavList onNavigate={() => setMobileOpen(false)} />
-      <p className="mt-auto px-3 text-[11px] text-muted-foreground">Prototype · demo data only</p>
+      <p className="mt-auto px-3 text-[11px] text-muted-foreground">Kivi Health</p>
     </div>
   );
 
@@ -300,7 +315,7 @@ export function ClinicShell({ children }: { children: React.ReactNode }) {
               <Menu className="h-5 w-5" />
             </Button>
             <div className="w-40 sm:w-60">
-              <Select value={clinicId} onValueChange={setClinic} disabled={!!imp || clinics.length < 2}>
+              <Select value={clinicId} onValueChange={(v) => { setClinic(v); qc.removeQueries({ queryKey: ["clinic"] }); }} disabled={!!imp || clinics.length < 2}>
                 <SelectTrigger aria-label="Select clinic" className="h-9">
                   <SelectValue placeholder="Select clinic" />
                 </SelectTrigger>
