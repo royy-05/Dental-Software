@@ -7,7 +7,7 @@ test.describe("login and roles", () => {
     await page.fill("#login-email", USERS.frontDesk);
     await page.fill("#login-pw", "definitely-wrong-password");
     await page.getByRole("button", { name: "Sign in" }).click();
-    await expect(page.getByRole("alert")).toContainText(/not right/);
+    await expect(page.getByRole("alert").filter({ hasText: /not right/ })).toBeVisible();
   });
 
   test("front desk signs in and sees only the modules its role allows", async ({ page }) => {

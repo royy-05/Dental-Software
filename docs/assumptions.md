@@ -117,3 +117,14 @@ Where the Scope of Work (docs/spec.txt) was ambiguous, the prototype uses these 
 
 ### Not built in Phase 2A
 - Twilio/MSG91 drivers, email delivery webhooks, object storage for uploads, OTP delivery, Reserve with Google, PMS, Stripe, calendar sync, custom domains, backups, custom roles.
+
+### UI migration choices (Phase 2A)
+- The panels fetch an appointment window of 60 days back to 90 days ahead and filter, sort and page it in the browser, as Phase 1 did; the CSV export applies the same filters on the server and masks PHI when the Hide PHI switch is on.
+- The clinic panel shows the platform quiet hours as the defaults (21:00-08:00); the real values are applied by the server and edited in the super admin Messaging settings.
+- The clinic Billing view shows the plan and its limits; invoices are managed in the super admin panel only.
+- Starter-template default reasons are created inactive and unassigned (an inactive reason may have no provider; an active one must have at least one).
+- Adding a user to a clinic group gives them Clinic Manager access to every location in the group (existing higher roles are kept).
+- "Retry sync", "Run backup" and DNS checks remain simulated and are labelled as such in the admin panel. Custom domains are saved but not verified (Phase 3).
+- Platform analytics shows the monthly growth series from the server instead of Phase 1's weekly per-clinic chart.
+- The widget caches availability per reason, provider and month and slots per day; date-first flows merge first-available slots across bookable reasons.
+- The builder preview runs the slot engine locally on the draft (no appointments, holds, holidays or blockouts), as the Phase 1 preview did; live availability always comes from the server.

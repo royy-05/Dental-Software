@@ -12,3 +12,10 @@ export const PATCH = handler({ summary: "Turn an announcement on or off", access
     return toAnnouncement(await tx.announcement.update({ where: { id: a.id }, data: { active: body.active } }));
   }),
 );
+
+export const DELETE = handler({ summary: "Delete an announcement", access: { kind: "platform", permission: "admin:support" }, params: z.object({ id: zId }) }, async ({ params }) =>
+  withPlatform(async (tx) => {
+    await tx.announcement.deleteMany({ where: { id: params.id } });
+    return { ok: true };
+  }),
+);

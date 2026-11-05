@@ -10,6 +10,7 @@ Times on appointments are clinic wall-clock strings (`YYYY-MM-DDTHH:mm`); `creat
 | --- | --- | --- | --- | --- |
 | GET | `/api/admin/analytics` | Platform role with `admin:analytics` | query: days | Platform analytics: compare clinics (bookings, conversion, show rate, source mix, ad cost per booking) and 12-month growth |
 | PATCH | `/api/admin/announcements/:id` | Platform role with `admin:support` | params: id; body: active | Turn an announcement on or off |
+| DELETE | `/api/admin/announcements/:id` | Platform role with `admin:support` | params: id | Delete an announcement |
 | GET | `/api/admin/announcements` | Platform role with `admin:support` |  | Announcement banners |
 | POST | `/api/admin/announcements` | Platform role with `admin:support` | body: message, clinicIds, tone | Post an announcement banner to all or selected clinics |
 | GET | `/api/admin/audit` | Platform role with `admin:audit` | query: clinicId, category, q, limit | Audit log across the platform (who did what, when, from which IP), filterable |
@@ -17,7 +18,7 @@ Times on appointments are clinic wall-clock strings (`YYYY-MM-DDTHH:mm`); `creat
 | POST | `/api/admin/clinics/:id/delete` | Platform role with `admin:clinics:delete` | params: id | Soft delete a clinic (restorable for 30 days; booking page goes offline) |
 | POST | `/api/admin/clinics/:id/restore` | Platform role with `admin:clinics:delete` | params: id | Restore a soft-deleted clinic |
 | GET | `/api/admin/clinics/:id` | Platform role with `admin:clinics:view` | params: id | Clinic detail for the admin panel: clinic, plan, resolved features, staff, counts |
-| PATCH | `/api/admin/clinics/:id` | Platform role with `admin:clinics:edit` | params: id; body: name, slug, specialty, timeZone, phone, email, address, status, planId, groupId, ownerUserId, trialEndsAt, featureOverrides, smsRegistration, customDomain, retentionDays, rwg, pms | Edit a clinic from the admin panel (details, status, plan, trial, feature overrides, SMS registration, custom domain, retention, integrations) |
+| PATCH | `/api/admin/clinics/:id` | Platform role with `admin:clinics:edit` | params: id; body: name, slug, specialty, timeZone, phone, email, address, description, status, planId, groupId, ownerUserId, trialEndsAt, featureOverrides, smsRegistration, customDomain, retentionDays, rwg, pms | Edit a clinic from the admin panel (details, status, plan, trial, feature overrides, SMS registration, custom domain, retention, integrations) |
 | GET | `/api/admin/clinics` | Platform role with `admin:clinics:view` |  | All clinics (including soft-deleted) with plan, owner, bookings this month and last login |
 | POST | `/api/admin/clinics` | Platform role with `admin:clinics:edit` | body: name, slug, specialty, timeZone, phone, email, address, planId, trial, owner, starterTemplateId, importReasons, importProviders | Add clinic wizard: details, slug, time zone, owner (existing or invite), plan, starter template, CSV import of reasons and providers |
 | PATCH | `/api/admin/coupons/:id` | Platform role with `admin:billing` | params: id; body: active | Enable or disable a coupon |
@@ -155,4 +156,4 @@ Times on appointments are clinic wall-clock strings (`YYYY-MM-DDTHH:mm`); `creat
 | GET | `/api/public/manage/:token/slots` | Public (rate limit: manageLinkPerIp) | params: token; query: date, providerId | Slots for a patient reschedule (the appointment's own time does not block) |
 | POST | `/api/webhooks/sms` | Public (rate limit: publicReadPerIp) | body: clinicSlug, from, text | Inbound SMS webhook: C confirms, STOP/START opt out or in, HELP answers; auto-reply queued |
 
-146 endpoints.
+147 endpoints.

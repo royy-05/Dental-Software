@@ -22,7 +22,7 @@ test.describe("patient booking", () => {
     await expect(page.getByRole("heading", { level: 1 })).toContainText(/Clear Skin/i);
 
     // 1. Reason (first bookable card in the New patient section)
-    await page.getByRole("button", { name: /Skin Check|Consultation|Acne|Rash|Visit/i }).first().click();
+    await page.getByRole("button", { name: /^New Patient Skin Consultation/ }).click();
     // 2. Date and time (slot is held server-side)
     await pickFirstSlot(page);
     await expect(page.getByRole("timer")).toBeVisible();
@@ -69,13 +69,13 @@ test.describe("patient booking", () => {
 
   test("a held slot disappears for other visitors", async ({ page, browser }) => {
     await page.goto(`/book/${SLUG}`);
-    await page.getByRole("button", { name: /Skin Check|Consultation|Acne|Rash|Visit/i }).first().click();
+    await page.getByRole("button", { name: /^New Patient Skin Consultation/ }).click();
     const label = await pickFirstSlot(page);
     await expect(page.getByRole("timer")).toBeVisible();
     const other = await browser.newContext();
     const p2 = await other.newPage();
     await p2.goto(`/book/${SLUG}`);
-    await p2.getByRole("button", { name: /Skin Check|Consultation|Acne|Rash|Visit/i }).first().click();
+    await p2.getByRole("button", { name: /^New Patient Skin Consultation/ }).click();
     const day = p2.getByRole("grid").getByRole("button", { name: /times available/ }).first();
     await day.click();
     const times = p2.getByRole("region", { name: /times$/ }).getByRole("button");

@@ -280,6 +280,7 @@ export const zClinicAdminPatch = z
     phone: zText(40),
     email: zEmail.or(z.literal("")),
     address: zText(300),
+    description: zText(2000),
     status: zClinicStatus,
     planId: zId,
     groupId: zId.nullable(),
@@ -290,7 +291,7 @@ export const zClinicAdminPatch = z
     customDomain: z.string().max(253).nullable(),
     retentionDays: z.number().int().min(30).max(3650).nullable(),
     rwg: z.object({ enabled: z.boolean(), websiteUrl: zText(2048), feedStatus: z.enum(["healthy", "warning", "error", "off"]) }).partial(),
-    pms: z.object({ name: zText(60), connected: z.boolean(), lastSyncAt: z.string().datetime().optional(), syncError: zText(300).optional() }).partial(),
+    pms: z.object({ name: zText(60), connected: z.boolean(), lastSyncAt: z.string().datetime().nullable(), syncError: zText(300).nullable() }).partial(),
   })
   .partial();
 export const zPlanPatch = z.object({ name: zName(60), priceMonthly: z.number().int().min(0).max(100_000), limits: z.object({ locations: z.number().int().min(1).max(1000), providers: z.number().int().min(1).max(10_000), smsCredits: z.number().int().min(0).max(10_000_000), modules: z.array(zFeatureKey) }).partial() }).partial();

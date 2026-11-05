@@ -52,7 +52,7 @@ export const PATCH = handler({ summary: "Edit a clinic from the admin panel (det
         continue;
       }
       if (k === "slug" && v !== current.slug && (await slugTaken(tx, v as string, current.id))) throw conflict("That booking slug is already taken.");
-      if (k === "rwg" || k === "pms") data[k] = json({ ...(current[k] as object), ...(v as object) });
+      if (k === "rwg" || k === "pms") data[k] = json(Object.fromEntries(Object.entries({ ...(current[k] as object), ...(v as object) }).filter(([, x]) => x !== null)));
       else if (k === "trialEndsAt") data.trialEndsAt = v ? new Date(v as string) : null;
       else data[k] = v;
       changed.push(k);

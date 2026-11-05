@@ -29,8 +29,3 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     </QueryClientProvider>
   );
 }
-
-/** Kept for components that waited for the old localStorage store; server data is loaded through queries now. */
-export function useHydrated() {
-  return true;
-}

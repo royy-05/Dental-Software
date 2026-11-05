@@ -53,8 +53,8 @@ See [`api.md`](api.md) (generated, 146 endpoints), [`assumptions.md`](assumption
 - Super admin dashboard and platform analytics (compare clinics, growth, retention) in SQL.
 
 ### Step 9: tests, CI, docs
-- Vitest: unit tests (slot engine, flow rules, notifications, links, TOTP) and integration tests against a seeded Postgres (RLS, auth, booking, routes, reports, jobs).
-- Playwright end-to-end (`e2e/`): login and roles, patient booking end to end, held slots, signed-link cancel, staff confirmation, admin pages.
+- Vitest: 158 tests in 22 files: unit tests (slot engine, flow rules, notifications, links, TOTP, metrics) and integration tests against a seeded Postgres (RLS, auth, booking and concurrency, clinic and admin routes, report parity, jobs).
+- Playwright end-to-end (`e2e/`, 8 tests): login and roles, patient booking end to end (attribution and consent checked through the API), held slots invisible to other visitors, cancel from the signed link and stale-link rejection, staff confirmation from the drawer, admin dashboard and audit log.
 - GitHub Actions (`.github/workflows/ci.yml`): lint, typecheck, unit and integration tests, build, Playwright.
 - `docs/api.md` is generated from the route specs (`npm run docs:api`).
 
