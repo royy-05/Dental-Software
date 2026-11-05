@@ -103,6 +103,29 @@ export default function ManagePage({ params }: { params: Promise<{ clinicSlug: s
   }, [view.data, done, token]);
 
   if (view.isLoading) return <LoadingState className="mx-auto max-w-xl pt-16" />;
+  if (view.error) {
+    const isDb =
+      view.error.message.includes("database") ||
+      view.error.message.includes("database_unavailable") ||
+      ("status" in view.error && ((view.error as { status?: number }).status === 503 || (view.error as { status?: number }).status === 500));
+    return (
+      <main id="main" className="mx-auto max-w-md px-4 py-20 text-center">
+        <h1 className="text-xl font-semibold">{isDb ? "Service Temporarily Unavailable" : "Appointment not found"}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {isDb ? "We're currently unable to load your appointment details. Please try again shortly." : view.error.message}
+        </p>
+        {isDb && (
+          <button
+            type="button"
+            onClick={() => view.refetch()}
+            className="mt-5 inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-blue-700"
+          >
+            Try again
+          </button>
+        )}
+      </main>
+    );
+  }
   if (!clinic || !appt || !rules)
     return (
       <main id="main" className="mx-auto max-w-md px-4 py-20 text-center">

@@ -11,7 +11,7 @@ services:
       POSTGRES_DB: kivi
       KIVI_APP_PASSWORD: ${KIVI_APP_PASSWORD:-kivi_app_local_only}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - kivi-pg:/var/lib/postgresql/data
       - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro

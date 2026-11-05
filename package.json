@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "setup": "node scripts/setup.cjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -10,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run lint && npm run typecheck && npm run test",
-    "test:unit": "SKIP_DB_SETUP=1 vitest run --exclude 'src/**/*.int.test.ts'",
+    "test:unit": "node scripts/test-unit.cjs",
     "test:e2e": "playwright test",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",

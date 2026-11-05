@@ -142,6 +142,14 @@ export function errorResponse(err: unknown, req?: NextRequest): Response {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === "P2025") return NextResponse.json({ error: { code: "not_found", message: "Not found." } }, { status: 404 });
     if (err.code === "P2002") return NextResponse.json({ error: { code: "conflict", message: "That already exists." } }, { status: 409 });
+    if (["P1000", "P1001", "P1002", "P1003", "P1008", "P1017"].includes(err.code)) {
+      log.error("Database connection error", { code: err.code, message: err.message });
+      return NextResponse.json({ error: { code: "database_unavailable", message: "Database is temporarily unavailable. Please try again shortly." } }, { status: 503 });
+    }
+  }
+  if (err instanceof Prisma.PrismaClientInitializationError) {
+    log.error("Database initialization/connection failed", { message: err.message, errorCode: err.errorCode });
+    return NextResponse.json({ error: { code: "database_unavailable", message: "Database connection failed. Please ensure the database is running." } }, { status: 503 });
   }
   log.error("Unhandled API error", { path: req?.nextUrl.pathname, error: err instanceof Error ? err.message : String(err) });
   return NextResponse.json({ error: { code: "internal", message: "Something went wrong." } }, { status: 500 });

@@ -1,12 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
-
-function encryptionKey(): Buffer {
-  const raw = process.env.APP_ENCRYPTION_KEY;
-  if (!raw) throw new Error("APP_ENCRYPTION_KEY is not set");
-  const key = Buffer.from(raw, "base64");
-  if (key.length !== 32) throw new Error("APP_ENCRYPTION_KEY must be 32 bytes, base64 encoded");
-  return key;
-}
+import { encryptionKey } from "@/lib/env";
 
 /** AES-256-GCM. Output: base64(iv | tag | ciphertext). */
 export function encrypt(plain: string): string {
