@@ -3,11 +3,11 @@
 import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Plus, Trash2, X } from "lucide-react";
-import { toast } from "sonner";
 import type { ClinicGroup } from "@/types";
 import { ROLE_LABELS } from "@/types";
-import { useApp } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation } from "@/lib/api/session";
+import { useAdminAnalytics, useAdminClinics, useAdminGroups, useAdminUsers, type AdminGroup } from "@/lib/api/admin";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
@@ -16,8 +16,9 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AdminGuard, ConfirmDialog, Field, NativeSelect, Section, useAdminCan } from "@/components/admin-pages/common";
-import { bookingsIn, lastDays, showRate } from "@/components/admin-pages/metrics";
 import { ReadOnlyNotice } from "@/components/admin/shell";
+
+const ADMIN_KEYS = [qk.admin()];
 
 export default function GroupsPage() {
   return (
@@ -28,7 +29,8 @@ export default function GroupsPage() {
 }
 
 function Groups() {
-  const groups = useApp((s) => s.db.groups);
+  const groupsQ = useAdminGroups();
+  const groups = groupsQ.data ?? [];
   const canEdit = useAdminCan()("admin:groups:edit");
   const [editing, setEditing] = useState<ClinicGroup | "new" | null>(null);
   return (
@@ -39,7 +41,7 @@ function Groups() {
         actions={canEdit && <Button onClick={() => setEditing("new")}><Plus /> New group</Button>}
       />
       <ReadOnlyNotice perm="admin:groups:edit" />
-      <ListState items={groups} emptyTitle="No clinic groups" emptyDescription="Create a group to combine locations under one owner.">
+      <ListState items={groups} loading={groupsQ.isLoading} emptyTitle="No clinic groups" emptyDescription="Create a group to combine locations under one owner.">
         {(list) => (
           <div className="space-y-6">
             {list.map((g) => (
@@ -53,24 +55,26 @@ function Groups() {
   );
 }
 
-function GroupCard({ group, canEdit, onEdit }: { group: ClinicGroup; canEdit: boolean; onEdit: () => void }) {
-  const db = useApp((s) => s.db);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+function GroupCard({ group, canEdit, onEdit }: { group: AdminGroup; canEdit: boolean; onEdit: () => void }) {
+  const users = useAdminUsers().data ?? [];
+  const analytics = useAdminAnalytics(30);
   const [del, setDel] = useState(false);
   const [addUser, setAddUser] = useState("");
-  const owner = db.users.find((u) => u.id === group.ownerUserId);
-  const groupUsers = db.users.filter((u) => u.groupId === group.id);
+  const owner = users.find((u) => u.id === group.ownerUserId);
+  const groupUsers = users.filter((u) => u.groupId === group.id);
+  const userM = useApiMutation((v: { userId: string; groupId: string | null; msg: string }) => api(`/api/admin/users/${v.userId}`, { method: "PATCH", body: { groupId: v.groupId } }), { invalidate: ADMIN_KEYS, success: (_r, v) => v.msg });
+  const delM = useApiMutation(() => api(`/api/admin/groups/${group.id}`, { method: "DELETE" }), { invalidate: ADMIN_KEYS, success: "Group deleted" });
 
   const report = useMemo(() => {
-    const p = lastDays(30);
+    const rows = analytics.data?.compare ?? [];
     return group.clinicIds.map((cid) => {
-      const c = db.clinics.find((x) => x.id === cid);
-      return { id: cid, name: c?.name ?? cid, bookings: bookingsIn(db.appointments, p, cid).length, show: showRate(db.appointments, p, cid), status: c?.status ?? "active" };
+      const r = rows.find((x) => x.clinicId === cid);
+      return { id: cid, name: r?.name ?? cid, bookings: r?.bookings ?? 0, show: r?.showRate ?? 0, status: r?.status ?? "active" };
     });
-  }, [db.appointments, db.clinics, group.clinicIds]);
+  }, [analytics.data, group.clinicIds]);
   const total = report.reduce((s, r) => s + r.bookings, 0);
-  const combinedShow = showRate(db.appointments.filter((a) => group.clinicIds.includes(a.clinicId)), lastDays(30));
+  // Combined show rate = bookings-weighted average of the per-location rates.
+  const combinedShow = total ? Math.round((report.reduce((s, r) => s + r.show * r.bookings, 0) / total) * 10) / 10 : 0;
 
   return (
     <Section
@@ -137,11 +141,7 @@ function GroupCard({ group, canEdit, onEdit }: { group: ClinicGroup; canEdit: bo
                     size="xs"
                     variant="ghost"
                     aria-label={`Remove ${u.name} from group`}
-                    onClick={() => {
-                      mutate((d) => void (d.users.find((x) => x.id === u.id)!.groupId = undefined));
-                      logAudit({ action: "Removed group user", category: "user", target: `${u.name} · ${group.name}` });
-                      toast.success(`${u.name} removed from group`);
-                    }}
+                    onClick={() => userM.mutate({ userId: u.id, groupId: null, msg: `${u.name} removed from group` })}
                   >
                     <X />
                   </Button>
@@ -155,19 +155,13 @@ function GroupCard({ group, canEdit, onEdit }: { group: ClinicGroup; canEdit: bo
               onSubmit={(e) => {
                 e.preventDefault();
                 if (!addUser) return;
-                mutate((d) => {
-                  const u = d.users.find((x) => x.id === addUser)!;
-                  u.groupId = group.id;
-                  u.clinicIds = [...new Set([...u.clinicIds, ...group.clinicIds])];
-                });
-                logAudit({ action: "Added group user", category: "user", target: group.name });
-                toast.success("User added to group");
+                userM.mutate({ userId: addUser, groupId: group.id, msg: "User added to group" });
                 setAddUser("");
               }}
             >
               <NativeSelect aria-label="Add user to group" className="h-9 flex-1" value={addUser} onChange={(e) => setAddUser(e.target.value)}>
                 <option value="">Add a clinic user…</option>
-                {db.users.filter((u) => u.groupId !== group.id && ["clinic_owner", "clinic_manager", "front_desk"].includes(u.role)).map((u) => (
+                {users.filter((u) => u.groupId !== group.id && ["clinic_owner", "clinic_manager", "front_desk"].includes(u.role)).map((u) => (
                   <option key={u.id} value={u.id}>{u.name} ({ROLE_LABELS[u.role]})</option>
                 ))}
               </NativeSelect>
@@ -183,51 +177,27 @@ function GroupCard({ group, canEdit, onEdit }: { group: ClinicGroup; canEdit: bo
         description="Clinics stay as they are; only the grouping and group-level access are removed."
         confirmLabel="Delete group"
         variant="destructive"
-        onConfirm={() => {
-          mutate((d) => {
-            d.groups = d.groups.filter((g) => g.id !== group.id);
-            d.clinics.forEach((c) => c.groupId === group.id && (c.groupId = undefined));
-            d.users.forEach((u) => u.groupId === group.id && (u.groupId = undefined));
-          });
-          logAudit({ action: "Deleted clinic group", category: "clinic", target: group.name });
-          toast.success("Group deleted");
-        }}
+        onConfirm={() => delM.mutate()}
       />
     </Section>
   );
 }
 
 function GroupDialog({ group, onClose }: { group: ClinicGroup | null; onClose: () => void }) {
-  const clinics = useApp((s) => s.db.clinics);
-  const users = useApp((s) => s.db.users);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const clinics = useAdminClinics().data ?? [];
+  const users = useAdminUsers().data ?? [];
   const [name, setName] = useState(group?.name ?? "");
   const [ownerId, setOwnerId] = useState(group?.ownerUserId ?? "");
   const [clinicIds, setClinicIds] = useState<string[]>(group?.clinicIds ?? []);
   const owners = users.filter((u) => u.role === "clinic_owner");
   const valid = name.trim() && ownerId && clinicIds.length > 0;
-
+  const saveM = useApiMutation(
+    (body: { name: string; ownerUserId: string; clinicIds: string[] }) => (group ? api(`/api/admin/groups/${group.id}`, { method: "PATCH", body }) : api("/api/admin/groups", { body })),
+    { invalidate: ADMIN_KEYS, success: "Group saved", onSuccess: onClose },
+  );
   const save = () => {
     if (!valid) return;
-    mutate((d) => {
-      const id = group?.id ?? uid("g");
-      const next: ClinicGroup = { id, name: name.trim(), ownerUserId: ownerId, clinicIds };
-      if (group) Object.assign(d.groups.find((g) => g.id === id)!, next);
-      else d.groups.push(next);
-      for (const c of d.clinics) {
-        if (clinicIds.includes(c.id)) c.groupId = id;
-        else if (c.groupId === id) c.groupId = undefined;
-      }
-      const owner = d.users.find((u) => u.id === ownerId);
-      if (owner) {
-        owner.groupId = id;
-        owner.clinicIds = [...new Set([...owner.clinicIds, ...clinicIds])];
-      }
-    });
-    logAudit({ action: group ? "Edited clinic group" : "Created clinic group", category: "clinic", target: name });
-    toast.success("Group saved");
-    onClose();
+    saveM.mutate({ name: name.trim(), ownerUserId: ownerId, clinicIds });
   };
 
   return (
@@ -256,7 +226,7 @@ function GroupDialog({ group, onClose }: { group: ClinicGroup | null; onClose: (
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={!valid}>Save group</Button>
+          <Button onClick={save} disabled={!valid || saveM.isPending}>Save group</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -3,11 +3,13 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { LogIn } from "lucide-react";
-import { toast } from "sonner";
 import type { ClinicStatus } from "@/types";
 import { can, type Permission } from "@/lib/permissions";
-import { useApp, useCurrentUser } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation, useMe, usePlatformRole } from "@/lib/api/session";
+import { useQueryClient } from "@tanstack/react-query";
 import { NoAccess } from "@/components/shared/guards";
+import { LoadingState } from "@/components/shared/states";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,13 +19,15 @@ import { Textarea } from "@/components/ui/textarea";
 
 /** Permission helper for the current platform user. */
 export function useAdminCan() {
-  const user = useCurrentUser();
-  return (p: Permission) => can(user?.role, p);
+  const role = usePlatformRole();
+  return (p: Permission) => can(role, p);
 }
 
-/** Page guard for admin pages (view permission). */
+/** Page guard for admin pages (view permission). The server enforces the same matrix on every route. */
 export function AdminGuard({ perm, children }: { perm: Permission; children: React.ReactNode }) {
+  const me = useMe();
   const allowed = useAdminCan()(perm);
+  if (me.isLoading) return <LoadingState />;
   if (!allowed) return <NoAccess body="Your platform role doesn't include this section." />;
   return <>{children}</>;
 }
@@ -104,14 +108,23 @@ export function ConfirmDialog({
   );
 }
 
-/** "Log in as clinic": reason is required and written to the audit log by the store action. */
+/** "Log in as clinic": reason is required; the server stores it on the session and in the audit log. */
 export function ImpersonateButton({ clinicId, clinicName, size = "sm", variant = "outline" }: { clinicId: string; clinicName: string; size?: ButtonProps["size"]; variant?: ButtonProps["variant"] }) {
   const allowed = useAdminCan()("admin:impersonate");
-  const start = useApp((s) => s.startImpersonation);
   const router = useRouter();
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [touched, setTouched] = useState(false);
+  const start = useApiMutation((body: { clinicId: string; reason: string }) => api("/api/admin/impersonation", { body }), {
+    invalidate: [qk.me],
+    success: `Impersonating ${clinicName}`,
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ["clinic"] });
+      setOpen(false);
+      router.push("/clinic");
+    },
+  });
   if (!allowed) return null;
   const valid = reason.trim().length >= 5;
   return (
@@ -131,10 +144,7 @@ export function ImpersonateButton({ clinicId, clinicName, size = "sm", variant =
               e.preventDefault();
               setTouched(true);
               if (!valid) return;
-              start(clinicId, reason.trim());
-              toast.success(`Impersonating ${clinicName}`);
-              setOpen(false);
-              router.push("/clinic");
+              start.mutate({ clinicId, reason: reason.trim() });
             }}
           >
             <div className="grid gap-1.5">
@@ -155,7 +165,7 @@ export function ImpersonateButton({ clinicId, clinicName, size = "sm", variant =
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit">Start session</Button>
+              <Button type="submit" disabled={start.isPending}>Start session</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -164,11 +174,16 @@ export function ImpersonateButton({ clinicId, clinicName, size = "sm", variant =
   );
 }
 
-/** Step 8: reset all demo data back to the seed. */
+/** Reset all demo data back to the seed (DEMO_MODE only on the server). */
 export function ResetDemoButton({ size = "default" }: { size?: ButtonProps["size"] }) {
   const allowed = useAdminCan()("admin:seed");
-  const reset = useApp((s) => s.resetDemo);
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  const reset = useApiMutation(() => api("/api/admin/demo/reset", { method: "POST" }), {
+    invalidate: [],
+    success: "Demo data reset",
+    onSuccess: () => qc.invalidateQueries(),
+  });
   if (!allowed) return null;
   return (
     <>
@@ -179,13 +194,10 @@ export function ResetDemoButton({ size = "default" }: { size?: ButtonProps["size
         open={open}
         onOpenChange={setOpen}
         title="Reset all demo data?"
-        description="This replaces every clinic, appointment, message, ticket and setting in this browser with fresh seed data dated from today. You stay signed in."
+        description="This replaces every clinic, appointment, message, ticket and setting in the database with fresh seed data dated from today. You stay signed in."
         confirmLabel="Reset data"
         variant="destructive"
-        onConfirm={() => {
-          reset();
-          toast.success("Demo data reset");
-        }}
+        onConfirm={() => reset.mutate()}
       />
     </>
   );

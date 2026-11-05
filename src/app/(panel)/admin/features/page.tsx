@@ -1,11 +1,12 @@
 "use client";
 
 import { useMemo } from "react";
-import { toast } from "sonner";
 import type { FeatureKey } from "@/types";
 import { FEATURE_LABELS } from "@/types";
 import { featureEnabled } from "@/lib/permissions";
-import { useApp } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation } from "@/lib/api/session";
+import { useAdminClinics, useAdminPlans } from "@/lib/api/admin";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
@@ -25,32 +26,32 @@ export default function FeaturesPage() {
 }
 
 function Features() {
-  const plans = useApp((s) => s.db.plans);
-  const clinics = useApp((s) => s.db.clinics);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const plansQ = useAdminPlans();
+  const clinicsQ = useAdminClinics();
+  const plans = useMemo(() => plansQ.data ?? [], [plansQ.data]);
+  const clinics = useMemo(() => clinicsQ.data ?? [], [clinicsQ.data]);
   const canEdit = useAdminCan()("admin:features:edit");
   const live = useMemo(() => clinics.filter((c) => !c.deletedAt), [clinics]);
 
+  const planM = useApiMutation((v: { planId: string; modules: FeatureKey[]; msg: string }) => api(`/api/admin/plans/${v.planId}`, { method: "PATCH", body: { limits: { modules: v.modules } } }), {
+    invalidate: [qk.admin(), ["catalog"], ["clinic"]],
+    success: (_r, v) => v.msg,
+  });
+  const overrideM = useApiMutation((v: { clinicId: string; key: FeatureKey; value: boolean | null; msg: string }) => api(`/api/admin/clinics/${v.clinicId}`, { method: "PATCH", body: { featureOverrides: { [v.key]: v.value } } }), {
+    invalidate: [qk.admin(), ["clinic"]],
+    success: (_r, v) => v.msg,
+  });
+
   const setPlanModule = (planId: string, key: FeatureKey, on: boolean) => {
-    mutate((d) => {
-      const p = d.plans.find((x) => x.id === planId)!;
-      p.limits.modules = on ? [...new Set([...p.limits.modules, key])] : p.limits.modules.filter((m) => m !== key);
-    });
     const plan = plans.find((p) => p.id === planId);
-    logAudit({ action: `${on ? "Enabled" : "Disabled"} ${FEATURE_LABELS[key]} for plan`, category: "settings", target: plan?.name ?? planId });
-    toast.success(`${FEATURE_LABELS[key]} ${on ? "on" : "off"} for ${plan?.name}`);
+    if (!plan) return;
+    const modules = on ? [...new Set([...plan.limits.modules, key])] : plan.limits.modules.filter((m) => m !== key);
+    planM.mutate({ planId, modules, msg: `${FEATURE_LABELS[key]} ${on ? "on" : "off"} for ${plan.name}` });
   };
 
   const setOverride = (clinicId: string, key: FeatureKey, value: "inherit" | "on" | "off") => {
-    mutate((d) => {
-      const c = d.clinics.find((x) => x.id === clinicId)!;
-      if (value === "inherit") delete c.featureOverrides[key];
-      else c.featureOverrides[key] = value === "on";
-    });
     const c = clinics.find((x) => x.id === clinicId);
-    logAudit({ action: `Feature override ${FEATURE_LABELS[key]}: ${value}`, category: "settings", target: c?.name ?? clinicId, clinicId });
-    toast.success(`${c?.name}: ${FEATURE_LABELS[key]} ${value === "inherit" ? "follows plan" : value}`);
+    overrideM.mutate({ clinicId, key, value: value === "inherit" ? null : value === "on", msg: `${c?.name}: ${FEATURE_LABELS[key]} ${value === "inherit" ? "follows plan" : value}` });
   };
 
   return (
@@ -61,7 +62,7 @@ function Features() {
       />
       <ReadOnlyNotice perm="admin:features:edit" />
       <Section title="By plan">
-        <ListState items={plans} emptyTitle="No plans">
+        <ListState items={plans} loading={plansQ.isLoading} emptyTitle="No plans">
           {(list) => (
             <Table>
               <TableHeader>
@@ -92,7 +93,7 @@ function Features() {
         </ListState>
       </Section>
       <Section title="Per-clinic overrides" description="“Plan” inherits the clinic's plan. The badge shows the effective value.">
-        <ListState items={live} emptyTitle="No clinics">
+        <ListState items={live} loading={clinicsQ.isLoading} emptyTitle="No clinics">
           {(list) => (
             <Table>
               <TableHeader>

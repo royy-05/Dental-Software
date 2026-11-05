@@ -1,22 +1,20 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { format, startOfMonth, startOfWeek, subMonths } from "date-fns";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { Source } from "@/types";
 import { SOURCE_LABELS } from "@/types";
-import { useApp } from "@/store/app";
+import { useAdminAnalytics } from "@/lib/api/admin";
 import { currency, downloadCsv } from "@/lib/utils";
 import { PageHeader, StatCard } from "@/components/shared/page-header";
-import { ListState } from "@/components/shared/states";
+import { ErrorState, ListState, LoadingState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AdminGuard, NativeSelect, Section } from "@/components/admin-pages/common";
-import { bookingsIn, conversionRate, lastDays, round1, showRate, sourceMix } from "@/components/admin-pages/metrics";
+import { round1 } from "@/components/admin-pages/metrics";
 
 const SOURCES: Source[] = ["google_ads", "gbp", "rwg", "website", "custom", "direct", "staff"];
 const SOURCE_COLORS: Record<Source, string> = { google_ads: "#0f766e", gbp: "#1d4ed8", rwg: "#ca8a04", website: "#7c3aed", custom: "#be123c", direct: "#64748b", staff: "#94a3b8" };
-const CLINIC_COLORS = ["#0f766e", "#1d4ed8", "#7c3aed", "#b45309", "#be123c"];
 
 export default function AnalyticsPage() {
   return (
@@ -27,72 +25,36 @@ export default function AnalyticsPage() {
 }
 
 function Analytics() {
-  const db = useApp((s) => s.db);
   const [days, setDays] = useState(30);
+  const q = useAdminAnalytics(days);
 
-  const compare = useMemo(() => {
-    const p = lastDays(days);
-    const months = new Set<string>();
-    for (let d = new Date(p.from); d <= p.to; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) months.add(format(d, "yyyy-MM"));
-    return db.clinics
-      .filter((c) => !c.deletedAt && db.appointments.some((a) => a.clinicId === c.id))
-      .map((c) => {
-        const booked = bookingsIn(db.appointments, p, c.id);
-        const adBookings = booked.filter((a) => a.source === "google_ads" || a.source === "custom").length;
-        // Ad spend is monthly; pro-rate it to the selected window.
-        const spend = db.adSpend.filter((s) => s.clinicId === c.id && months.has(s.month)).reduce((sum, s) => sum + s.amount, 0);
-        const proRated = (spend / Math.max(1, months.size)) * (days / 30);
-        const mix = sourceMix(booked);
-        return {
-          id: c.id,
+  const compare = useMemo(
+    () =>
+      (q.data?.compare ?? [])
+        .filter((c) => c.bookings > 0 || c.visits > 0)
+        .map((c) => ({
+          id: c.clinicId,
           name: c.name,
-          bookings: booked.length,
-          conversion: conversionRate(db.appointments, db.widgetSessions, p, c.id),
-          show: showRate(db.appointments, p, c.id),
-          adSpend: Math.round(proRated),
-          costPerBooking: adBookings ? Math.round(proRated / adBookings) : 0,
-          ...Object.fromEntries(SOURCES.map((s) => [s, mix[s] ?? 0])),
-        } as { id: string; name: string; bookings: number; conversion: number; show: number; adSpend: number; costPerBooking: number } & Record<Source, number>;
-      });
-  }, [db, days]);
+          bookings: c.bookings,
+          conversion: c.conversion,
+          show: c.showRate,
+          adSpend: c.adSpend,
+          costPerBooking: c.adCostPerBooking ?? 0,
+          ...Object.fromEntries(SOURCES.map((s) => [s, c.sourceMix[s] ?? 0])),
+        }) as { id: string; name: string; bookings: number; conversion: number; show: number; adSpend: number; costPerBooking: number } & Record<Source, number>),
+    [q.data],
+  );
+  const growth = useMemo(() => (q.data?.growth ?? []).map((g) => ({ ...g, label: `${g.month.slice(5)}/${g.month.slice(2, 4)}` })), [q.data]);
+  const allClinics = q.data?.compare ?? [];
+  const retained = allClinics.filter((c) => c.status !== "churned").length;
 
-  const growth = useMemo(() => {
-    const now = new Date();
-    const rows = [];
-    for (let i = 11; i >= 0; i--) {
-      const m = startOfMonth(subMonths(now, i));
-      const end = startOfMonth(subMonths(now, i - 1));
-      const created = db.clinics.filter((c) => new Date(c.createdAt) >= m && new Date(c.createdAt) < end).length;
-      const existing = db.clinics.filter((c) => new Date(c.createdAt) < end).length;
-      // Northside churned ~95 days ago (no logins since): treat churned clinics as lost from their last login month.
-      const lost = db.clinics.filter((c) => c.status === "churned" && c.lastLoginAt && new Date(c.lastLoginAt) < end).length;
-      rows.push({ month: format(m, "MMM yy"), newClinics: created, retention: existing ? round1(((existing - lost) / existing) * 100) : 100 });
-    }
-    return rows;
-  }, [db.clinics]);
-
-  const weekly = useMemo(() => {
-    const main = compare.map((c) => c.id);
-    const map = new Map<string, Record<string, number | string>>();
-    for (const a of db.appointments) {
-      if (!main.includes(a.clinicId)) continue;
-      const wk = format(startOfWeek(new Date(a.createdAt), { weekStartsOn: 1 }), "MMM d");
-      const key = startOfWeek(new Date(a.createdAt), { weekStartsOn: 1 }).toISOString();
-      const row = map.get(key) ?? { week: wk };
-      row[a.clinicId] = ((row[a.clinicId] as number) ?? 0) + 1;
-      map.set(key, row);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-9, -1).map(([, v]) => v);
-  }, [db.appointments, compare]);
-
-  const live = db.clinics.filter((c) => !c.deletedAt);
-  const retained = live.filter((c) => c.status !== "churned").length;
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Platform analytics"
-        description="Compare clinics side by side and track platform growth."
+        description="Compare clinics side by side and track platform growth. Computed in SQL on the server."
         actions={
           <>
             <NativeSelect aria-label="Period" className="h-9" value={days} onChange={(e) => setDays(Number(e.target.value))}>
@@ -102,6 +64,7 @@ function Analytics() {
             </NativeSelect>
             <Button
               variant="outline"
+              disabled={!compare.length}
               onClick={() =>
                 downloadCsv(
                   `platform-analytics-${days}d.csv`,
@@ -123,15 +86,17 @@ function Analytics() {
         }
       />
 
+      {q.isLoading && <LoadingState label="Loading analytics…" />}
+
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard label="Clinics on platform" value={live.length} />
-        <StatCard label="Logo retention" value={`${live.length ? round1((retained / live.length) * 100) : 0}%`} hint="Clinics not churned" />
+        <StatCard label="Clinics on platform" value={allClinics.length} />
+        <StatCard label="Logo retention" value={`${allClinics.length ? round1((retained / allClinics.length) * 100) : 0}%`} hint="Clinics not churned" />
         <StatCard label={`Bookings (${days}d)`} value={compare.reduce((s, c) => s + c.bookings, 0)} />
         <StatCard label="Bookings per clinic" value={compare.length ? Math.round(compare.reduce((s, c) => s + c.bookings, 0) / compare.length) : 0} />
       </div>
 
       <Section title="Clinics side by side">
-        <ListState items={compare} emptyTitle="No clinic activity">
+        <ListState items={compare} loading={q.isLoading} emptyTitle="No clinic activity">
           {(list) => (
             <Table>
               <TableHeader>
@@ -177,16 +142,17 @@ function Analytics() {
             </ResponsiveContainer>
           </div>
         </Section>
-        <Section title="Bookings per clinic" description="Weekly bookings created.">
-          <div className="h-72" role="img" aria-label="Line chart of weekly bookings per clinic">
+        <Section title="Bookings per clinic" description="Monthly bookings created, averaged over active clinics.">
+          <div className="h-72" role="img" aria-label="Line chart of monthly bookings per clinic">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={weekly} margin={{ left: -16 }}>
+              <LineChart data={growth} margin={{ left: -16 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="week" tick={{ fontSize: 11 }} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                {compare.map((c, i) => <Line key={c.id} type="monotone" dataKey={c.id} name={c.name} stroke={CLINIC_COLORS[i % CLINIC_COLORS.length]} strokeWidth={2} dot={false} />)}
+                <Line type="monotone" dataKey="bookings" name="Platform bookings" stroke="#0f766e" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="bookingsPerClinic" name="Per clinic" stroke="#1d4ed8" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -198,7 +164,7 @@ function Analytics() {
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={growth} margin={{ left: -16 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
               <YAxis yAxisId="l" allowDecimals={false} tick={{ fontSize: 11 }} />
               <YAxis yAxisId="r" orientation="right" domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
               <Tooltip />

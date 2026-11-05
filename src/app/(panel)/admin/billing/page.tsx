@@ -3,11 +3,12 @@
 import { useMemo, useState } from "react";
 import { addDays, format } from "date-fns";
 import { Plus, Send } from "lucide-react";
-import { toast } from "sonner";
-import type { FeatureKey, Invoice, MessageLog, Plan } from "@/types";
+import type { FeatureKey, Invoice, Plan } from "@/types";
 import { FEATURE_LABELS } from "@/types";
-import { useApp } from "@/store/app";
-import { currency, uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation } from "@/lib/api/session";
+import { useAdminClinics, useAdminCoupons, useAdminInvoices, useAdminPlans } from "@/lib/api/admin";
+import { currency } from "@/lib/utils";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
@@ -20,6 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AdminGuard, ClinicStatusBadge, Field, NativeSelect, Section, useAdminCan } from "@/components/admin-pages/common";
 
 const INVOICE_VARIANT: Record<Invoice["status"], BadgeProps["variant"]> = { paid: "success", open: "info", overdue: "danger", void: "muted" };
+const ADMIN_KEYS = [qk.admin()];
 
 export default function BillingPage() {
   return (
@@ -50,12 +52,12 @@ function Billing() {
 }
 
 function Plans() {
-  const plans = useApp((s) => s.db.plans);
+  const plans = useAdminPlans();
   const canEdit = useAdminCan()("admin:plans:edit");
   const [editing, setEditing] = useState<Plan | null>(null);
   return (
     <>
-      <ListState items={plans} emptyTitle="No plans">
+      <ListState items={plans.data ?? []} loading={plans.isLoading} emptyTitle="No plans">
         {(list) => (
           <div className="grid gap-4 md:grid-cols-3">
             {list.map((p) => (
@@ -81,9 +83,12 @@ function Plans() {
 }
 
 function PlanDialog({ plan, onClose }: { plan: Plan; onClose: () => void }) {
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
   const [v, setV] = useState(structuredClone(plan));
+  const save = useApiMutation((body: Plan) => api(`/api/admin/plans/${plan.id}`, { method: "PATCH", body: { name: body.name.trim(), priceMonthly: body.priceMonthly, limits: body.limits } }), {
+    invalidate: ADMIN_KEYS,
+    success: `${v.name} plan saved`,
+    onSuccess: onClose,
+  });
   const num = (s: string) => Math.max(0, Number(s) || 0);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -107,15 +112,7 @@ function PlanDialog({ plan, onClose }: { plan: Plan; onClose: () => void }) {
         </fieldset>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            disabled={!v.name.trim()}
-            onClick={() => {
-              mutate((d) => Object.assign(d.plans.find((p) => p.id === plan.id)!, v));
-              logAudit({ action: "Edited plan", category: "billing", target: v.name });
-              toast.success(`${v.name} plan saved`);
-              onClose();
-            }}
-          >
+          <Button disabled={!v.name.trim() || save.isPending} onClick={() => save.mutate(v)}>
             Save plan
           </Button>
         </DialogFooter>
@@ -125,15 +122,17 @@ function PlanDialog({ plan, onClose }: { plan: Plan; onClose: () => void }) {
 }
 
 function ClinicPlans() {
-  const clinics = useApp((s) => s.db.clinics);
-  const plans = useApp((s) => s.db.plans);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const clinicsQ = useAdminClinics();
+  const plans = useAdminPlans().data ?? [];
   const canEdit = useAdminCan()("admin:plans:edit");
-  const live = useMemo(() => clinics.filter((c) => !c.deletedAt), [clinics]);
+  const live = useMemo(() => (clinicsQ.data ?? []).filter((c) => !c.deletedAt), [clinicsQ.data]);
+  const patch = useApiMutation((v: { id: string; body: Record<string, unknown>; msg: string }) => api(`/api/admin/clinics/${v.id}`, { method: "PATCH", body: v.body }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, v) => v.msg,
+  });
   return (
     <div className="rounded-lg border bg-card">
-      <ListState items={live} emptyTitle="No clinics">
+      <ListState items={live} loading={clinicsQ.isLoading} emptyTitle="No clinics">
         {(list) => (
           <Table>
             <TableHeader>
@@ -158,9 +157,7 @@ function ClinicPlans() {
                       value={c.planId}
                       onChange={(e) => {
                         const planId = e.target.value;
-                        mutate((d) => void (d.clinics.find((x) => x.id === c.id)!.planId = planId));
-                        logAudit({ action: "Changed clinic plan", category: "billing", target: c.name, clinicId: c.id, details: `Now ${plans.find((p) => p.id === planId)?.name}` });
-                        toast.success(`${c.name} moved to ${plans.find((p) => p.id === planId)?.name}`);
+                        patch.mutate({ id: c.id, body: { planId }, msg: `${c.name} moved to ${plans.find((p) => p.id === planId)?.name}` });
                       }}
                     >
                       {plans.map((p) => <option key={p.id} value={p.id}>{p.name} ({currency(p.priceMonthly)})</option>)}
@@ -173,28 +170,13 @@ function ClinicPlans() {
                         <Button
                           size="xs"
                           variant="outline"
-                          onClick={() => {
-                            mutate((d) => {
-                              const x = d.clinics.find((y) => y.id === c.id)!;
-                              x.trialEndsAt = addDays(new Date(x.trialEndsAt ?? Date.now()), 7).toISOString();
-                            });
-                            logAudit({ action: "Extended trial by 7 days", category: "billing", target: c.name, clinicId: c.id });
-                            toast.success("Trial extended by 7 days");
-                          }}
+                          onClick={() => patch.mutate({ id: c.id, body: { trialEndsAt: addDays(new Date(c.trialEndsAt ?? Date.now()), 7).toISOString() }, msg: "Trial extended by 7 days" })}
                         >
                           Extend 7 days
                         </Button>
                         <Button
                           size="xs"
-                          onClick={() => {
-                            mutate((d) => {
-                              const x = d.clinics.find((y) => y.id === c.id)!;
-                              x.status = "active";
-                              x.trialEndsAt = undefined;
-                            });
-                            logAudit({ action: "Converted trial to paid", category: "billing", target: c.name, clinicId: c.id });
-                            toast.success(`${c.name} converted to paid`);
-                          }}
+                          onClick={() => patch.mutate({ id: c.id, body: { status: "active", trialEndsAt: null }, msg: `${c.name} converted to paid` })}
                         >
                           Convert
                         </Button>
@@ -212,39 +194,18 @@ function ClinicPlans() {
 }
 
 function Invoices() {
-  const invoices = useApp((s) => s.db.invoices);
-  const clinics = useApp((s) => s.db.clinics);
-  const plans = useApp((s) => s.db.plans);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
-  const addMessages = useApp((s) => s.addMessages);
+  const invoicesQ = useAdminInvoices();
+  const clinics = useAdminClinics().data ?? [];
+  const plans = useAdminPlans().data ?? [];
   const canEdit = useAdminCan()("admin:billing");
   const [status, setStatus] = useState<"all" | Invoice["status"]>("all");
   const [creating, setCreating] = useState(false);
+  const invoices = useMemo(() => invoicesQ.data ?? [], [invoicesQ.data]);
   const rows = useMemo(() => invoices.filter((i) => status === "all" || i.status === status).sort((a, b) => b.issuedAt.localeCompare(a.issuedAt)), [invoices, status]);
   const name = (id: string) => clinics.find((c) => c.id === id)?.name ?? id;
-
-  const dunning = (inv: Invoice) => {
-    const clinic = clinics.find((c) => c.id === inv.clinicId);
-    if (!clinic) return;
-    const msg: MessageLog = {
-      id: uid("msg"),
-      clinicId: clinic.id,
-      channel: "email",
-      direction: "outbound",
-      recipientType: "clinic",
-      to: clinic.email,
-      event: "test",
-      subject: `Payment reminder: invoice ${inv.number} is overdue`,
-      body: `Hi ${clinic.name},\n\nInvoice ${inv.number} for ${currency(inv.amount)} was due on ${format(new Date(inv.dueAt), "MMM d, yyyy")}. Please pay to avoid interruption.\n\nKivi Health billing`,
-      status: "delivered",
-      createdAt: new Date().toISOString(),
-    };
-    addMessages([msg]);
-    mutate((d) => void (d.invoices.find((i) => i.id === inv.id)!.dunningEmailsSent += 1));
-    logAudit({ action: "Sent dunning email", category: "billing", target: inv.number, clinicId: clinic.id });
-    toast.success(`Dunning email sent to ${clinic.email}`);
-  };
+  const dunningM = useApiMutation((inv: Invoice) => api(`/api/admin/invoices/${inv.id}/dunning`, { method: "POST" }), { invalidate: ADMIN_KEYS, success: (_r, inv) => `Dunning email queued for ${name(inv.clinicId)}` });
+  const paidM = useApiMutation((inv: Invoice) => api(`/api/admin/invoices/${inv.id}`, { method: "PATCH", body: { status: "paid" } }), { invalidate: ADMIN_KEYS, success: (_r, inv) => `${inv.number} marked paid` });
+  const dunning = (inv: Invoice) => dunningM.mutate(inv);
 
   return (
     <div className="space-y-3">
@@ -259,7 +220,7 @@ function Invoices() {
         {canEdit && <Button size="sm" className="ml-auto" onClick={() => setCreating(true)}><Plus /> Manual invoice</Button>}
       </div>
       <div className="rounded-lg border bg-card">
-        <ListState items={rows} emptyTitle="No invoices">
+        <ListState items={rows} loading={invoicesQ.isLoading} emptyTitle="No invoices">
           {(list) => (
             <Table>
               <TableHeader>
@@ -288,14 +249,7 @@ function Invoices() {
                       {canEdit && (i.status === "open" || i.status === "overdue") && (
                         <div className="flex justify-end gap-1">
                           {i.status === "overdue" && <Button size="xs" variant="outline" onClick={() => dunning(i)}><Send /> Dunning</Button>}
-                          <Button
-                            size="xs"
-                            onClick={() => {
-                              mutate((d) => void (d.invoices.find((x) => x.id === i.id)!.status = "paid"));
-                              logAudit({ action: "Marked invoice paid", category: "billing", target: i.number, clinicId: i.clinicId });
-                              toast.success(`${i.number} marked paid`);
-                            }}
-                          >
+                          <Button size="xs" onClick={() => paidM.mutate(i)}>
                             Mark paid
                           </Button>
                         </div>
@@ -313,19 +267,21 @@ function Invoices() {
           onClose={() => setCreating(false)}
           clinics={clinics.filter((c) => !c.deletedAt)}
           defaultAmount={(cid) => plans.find((p) => p.id === clinics.find((c) => c.id === cid)?.planId)?.priceMonthly ?? 0}
-          nextNumber={`KV-${1000 + invoices.length + 1}`}
         />
       )}
     </div>
   );
 }
 
-function ManualInvoiceDialog({ onClose, clinics, defaultAmount, nextNumber }: { onClose: () => void; clinics: { id: string; name: string }[]; defaultAmount: (id: string) => number; nextNumber: string }) {
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+function ManualInvoiceDialog({ onClose, clinics, defaultAmount }: { onClose: () => void; clinics: { id: string; name: string }[]; defaultAmount: (id: string) => number }) {
   const [clinicId, setClinicId] = useState(clinics[0]?.id ?? "");
   const [amount, setAmount] = useState(String(defaultAmount(clinics[0]?.id ?? "")));
   const [due, setDue] = useState(14);
+  const create = useApiMutation((body: { clinicId: string; amount: number; dueInDays: number }) => api<Invoice>("/api/admin/invoices", { body }), {
+    invalidate: ADMIN_KEYS,
+    success: (inv) => `Invoice ${inv.number} created`,
+    onSuccess: onClose,
+  });
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -338,23 +294,12 @@ function ManualInvoiceDialog({ onClose, clinics, defaultAmount, nextNumber }: { 
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Amount (USD)" htmlFor="inv-amount"><Input id="inv-amount" type="number" min={1} value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
-            <Field label="Due in (days)" htmlFor="inv-due"><Input id="inv-due" type="number" min={0} value={due} onChange={(e) => setDue(Number(e.target.value) || 0)} /></Field>
+            <Field label="Due in (days)" htmlFor="inv-due"><Input id="inv-due" type="number" min={1} max={90} value={due} onChange={(e) => setDue(Number(e.target.value) || 1)} /></Field>
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            disabled={!clinicId || !(Number(amount) > 0)}
-            onClick={() => {
-              const now = new Date();
-              mutate((d) =>
-                void d.invoices.push({ id: uid("inv"), clinicId, number: nextNumber, amount: Number(amount), issuedAt: now.toISOString(), dueAt: addDays(now, due).toISOString(), status: "open", dunningEmailsSent: 0 }),
-              );
-              logAudit({ action: "Created manual invoice", category: "billing", target: nextNumber, clinicId });
-              toast.success(`Invoice ${nextNumber} created`);
-              onClose();
-            }}
-          >
+          <Button disabled={!clinicId || !(Number(amount) > 0) || create.isPending} onClick={() => create.mutate({ clinicId, amount: Math.round(Number(amount)), dueInDays: Math.max(1, Math.min(90, due)) })}>
             Create invoice
           </Button>
         </DialogFooter>
@@ -364,13 +309,14 @@ function ManualInvoiceDialog({ onClose, clinics, defaultAmount, nextNumber }: { 
 }
 
 function Coupons() {
-  const coupons = useApp((s) => s.db.coupons);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const couponsQ = useAdminCoupons();
+  const coupons = couponsQ.data ?? [];
   const canEdit = useAdminCan()("admin:billing");
   const [code, setCode] = useState("");
   const [pct, setPct] = useState("10");
   const dup = coupons.some((c) => c.code === code.trim().toUpperCase());
+  const create = useApiMutation((body: { code: string; percentOff: number }) => api("/api/admin/coupons", { body }), { invalidate: ADMIN_KEYS, success: (_r, b) => `Coupon ${b.code} created`, onSuccess: () => setCode("") });
+  const toggle = useApiMutation((v: { id: string; active: boolean }) => api(`/api/admin/coupons/${v.id}`, { method: "PATCH", body: { active: v.active } }), { invalidate: ADMIN_KEYS, success: false });
   return (
     <div className="space-y-3">
       {canEdit && (
@@ -381,10 +327,7 @@ function Coupons() {
             const c = code.trim().toUpperCase();
             const p = Number(pct);
             if (!c || dup || !(p > 0 && p <= 100)) return;
-            mutate((d) => void d.coupons.push({ id: uid("cp"), code: c, percentOff: p, active: true, redemptions: 0 }));
-            logAudit({ action: "Created coupon", category: "billing", target: c });
-            toast.success(`Coupon ${c} created`);
-            setCode("");
+            create.mutate({ code: c, percentOff: p });
           }}
         >
           <Field label="Code" htmlFor="cp-code" hint={dup ? "Code already exists." : undefined}><Input id="cp-code" className="h-9 w-40 uppercase" value={code} onChange={(e) => setCode(e.target.value)} /></Field>
@@ -393,7 +336,7 @@ function Coupons() {
         </form>
       )}
       <div className="rounded-lg border bg-card">
-        <ListState items={coupons} emptyTitle="No coupons">
+        <ListState items={coupons} loading={couponsQ.isLoading} emptyTitle="No coupons">
           {(list) => (
             <Table>
               <TableHeader>
@@ -415,10 +358,7 @@ function Coupons() {
                         aria-label={`Coupon ${c.code} active`}
                         checked={c.active}
                         disabled={!canEdit}
-                        onCheckedChange={(on) => {
-                          mutate((d) => void (d.coupons.find((x) => x.id === c.id)!.active = on));
-                          logAudit({ action: `${on ? "Enabled" : "Disabled"} coupon`, category: "billing", target: c.code });
-                        }}
+                        onCheckedChange={(on) => toggle.mutate({ id: c.id, active: on })}
                       />
                     </TableCell>
                   </TableRow>

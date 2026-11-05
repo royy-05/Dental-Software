@@ -3,33 +3,39 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Copy, MoreHorizontal, Pause, Pencil, Play, RotateCcw, ShieldOff, Trash2, Eye } from "lucide-react";
-import { toast } from "sonner";
 import type { Clinic, ClinicStatus } from "@/types";
-import { useApp } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation } from "@/lib/api/session";
+import { useAdminClinics } from "@/lib/api/admin";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog, Field, NativeSelect, useAdminCan } from "./common";
-import { cloneClinicSettings, TIME_ZONES } from "./clinic-ops";
+import { TIME_ZONES } from "./clinic-ops";
 import { isSlugTaken, slugify } from "./metrics";
+
+const ADMIN_KEYS = [qk.admin()];
 
 export function ClinicActions({ clinic, showView = true }: { clinic: Clinic; showView?: boolean }) {
   const allow = useAdminCan();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
-  const clinics = useApp((s) => s.db.clinics);
-  const actor = useApp((s) => s.db.users.find((u) => u.id === s.session.userId)?.name ?? "Admin");
+  const clinics = useAdminClinics().data ?? [];
   const [dialog, setDialog] = useState<null | "edit" | "delete" | "clone" | "suspend">(null);
   const canEdit = allow("admin:clinics:edit");
   const canDelete = allow("admin:clinics:delete");
 
-  const setStatus = (status: ClinicStatus, label: string) => {
-    mutate((db) => void (db.clinics.find((c) => c.id === clinic.id)!.status = status));
-    logAudit({ action: `${label} clinic`, category: "clinic", target: clinic.name, clinicId: clinic.id });
-    toast.success(`${clinic.name}: ${label.toLowerCase()}`);
-  };
+  const patch = useApiMutation((v: { status: ClinicStatus; label: string }) => api(`/api/admin/clinics/${clinic.id}`, { method: "PATCH", body: { status: v.status } }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, v) => `${clinic.name}: ${v.label.toLowerCase()}`,
+  });
+  const del = useApiMutation(() => api(`/api/admin/clinics/${clinic.id}/delete`, { method: "POST" }), { invalidate: ADMIN_KEYS, success: `${clinic.name} deleted. Restore within 30 days.` });
+  const restore = useApiMutation(() => api(`/api/admin/clinics/${clinic.id}/restore`, { method: "POST" }), { invalidate: ADMIN_KEYS, success: `${clinic.name} restored` });
+  const clone = useApiMutation((fromId: string) => api(`/api/admin/clinics/${clinic.id}/clone`, { body: { fromId } }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, fromId) => `Copied branding, settings and booking flow from ${clinics.find((c) => c.id === fromId)?.name ?? "the other clinic"}`,
+  });
+  const setStatus = (status: ClinicStatus, label: string) => patch.mutate({ status, label });
 
   return (
     <>
@@ -62,13 +68,7 @@ export function ClinicActions({ clinic, showView = true }: { clinic: Clinic; sho
             </>
           )}
           {canDelete && clinic.deletedAt && (
-            <DropdownMenuItem
-              onSelect={() => {
-                mutate((db) => void (db.clinics.find((c) => c.id === clinic.id)!.deletedAt = undefined));
-                logAudit({ action: "Restored clinic", category: "clinic", target: clinic.name, clinicId: clinic.id });
-                toast.success(`${clinic.name} restored`);
-              }}
-            >
+            <DropdownMenuItem onSelect={() => restore.mutate()}>
               <RotateCcw className="h-4 w-4" /> Restore
             </DropdownMenuItem>
           )}
@@ -76,7 +76,7 @@ export function ClinicActions({ clinic, showView = true }: { clinic: Clinic; sho
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {dialog === "edit" && <EditClinicDialog clinic={clinic} onClose={() => setDialog(null)} />}
+      {dialog === "edit" && <EditClinicDialog clinic={clinic} clinics={clinics} onClose={() => setDialog(null)} />}
       <ConfirmDialog
         open={dialog === "delete"}
         onOpenChange={(o) => !o && setDialog(null)}
@@ -84,11 +84,7 @@ export function ClinicActions({ clinic, showView = true }: { clinic: Clinic; sho
         description="The clinic is hidden everywhere and its booking link stops working. You can restore it within 30 days."
         confirmLabel="Delete clinic"
         variant="destructive"
-        onConfirm={() => {
-          mutate((db) => void (db.clinics.find((c) => c.id === clinic.id)!.deletedAt = new Date().toISOString()));
-          logAudit({ action: "Soft-deleted clinic", category: "clinic", target: clinic.name, clinicId: clinic.id });
-          toast.success(`${clinic.name} deleted. Restore within 30 days.`);
-        }}
+        onConfirm={() => del.mutate()}
       />
       <ConfirmDialog
         open={dialog === "suspend"}
@@ -99,24 +95,14 @@ export function ClinicActions({ clinic, showView = true }: { clinic: Clinic; sho
         variant="destructive"
         onConfirm={() => setStatus("suspended", "Suspended")}
       />
-      <CloneDialog
-        open={dialog === "clone"}
-        onClose={() => setDialog(null)}
-        clinic={clinic}
-        sources={clinics.filter((c) => c.id !== clinic.id && !c.deletedAt)}
-        onClone={(fromId) => {
-          mutate((db) => cloneClinicSettings(db, fromId, clinic.id, actor));
-          const from = clinics.find((c) => c.id === fromId);
-          logAudit({ action: "Cloned clinic settings", category: "settings", target: clinic.name, clinicId: clinic.id, details: `From ${from?.name}` });
-          toast.success(`Copied branding, settings and booking flow from ${from?.name}`);
-        }}
-      />
+      <CloneDialog open={dialog === "clone"} onClose={() => setDialog(null)} clinic={clinic} sources={clinics.filter((c) => c.id !== clinic.id && !c.deletedAt)} onClone={(fromId) => clone.mutate(fromId)} />
     </>
   );
 }
 
 function CloneDialog({ open, onClose, clinic, sources, onClone }: { open: boolean; onClose: () => void; clinic: Clinic; sources: Clinic[]; onClone: (fromId: string) => void }) {
   const [from, setFrom] = useState(sources[0]?.id ?? "");
+  const value = from || sources[0]?.id || "";
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -125,32 +111,26 @@ function CloneDialog({ open, onClose, clinic, sources, onClone }: { open: boolea
           <DialogDescription>Copies branding, clinic hours, settings, insurance settings and the published booking flow. Reasons, providers and appointments are not copied.</DialogDescription>
         </DialogHeader>
         <Field label="Copy from" htmlFor="clone-from">
-          <NativeSelect id="clone-from" value={from} onChange={(e) => setFrom(e.target.value)}>
+          <NativeSelect id="clone-from" value={value} onChange={(e) => setFrom(e.target.value)}>
             {sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </NativeSelect>
         </Field>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button disabled={!from} onClick={() => { onClone(from); onClose(); }}>Clone settings</Button>
+          <Button disabled={!value} onClick={() => { onClone(value); onClose(); }}>Clone settings</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-function EditClinicDialog({ clinic, onClose }: { clinic: Clinic; onClose: () => void }) {
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
-  const clinics = useApp((s) => s.db.clinics);
+function EditClinicDialog({ clinic, clinics, onClose }: { clinic: Clinic; clinics: Clinic[]; onClose: () => void }) {
   const [v, setV] = useState({ name: clinic.name, slug: clinic.slug, timeZone: clinic.timeZone, phone: clinic.phone, email: clinic.email, address: clinic.address, description: clinic.description });
-  const slugBad = !/^[a-z0-9-]+$/.test(v.slug) || isSlugTaken(v.slug, clinics, clinic.id);
-  const save = () => {
-    if (!v.name.trim() || slugBad) return;
-    mutate((db) => Object.assign(db.clinics.find((c) => c.id === clinic.id)!, v));
-    logAudit({ action: "Edited clinic details", category: "clinic", target: v.name, clinicId: clinic.id });
-    toast.success("Clinic saved");
-    onClose();
-  };
+  const slugBad = !/^[a-z0-9-]{3,60}$/.test(v.slug) || isSlugTaken(v.slug, clinics, clinic.id);
+  const save = useApiMutation(
+    (body: typeof v) => api(`/api/admin/clinics/${clinic.id}`, { method: "PATCH", body: { name: body.name.trim(), slug: body.slug, timeZone: body.timeZone, phone: body.phone, email: body.email, address: body.address } }),
+    { invalidate: ADMIN_KEYS, success: "Clinic saved", onSuccess: onClose },
+  );
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-xl">
@@ -171,12 +151,12 @@ function EditClinicDialog({ clinic, onClose }: { clinic: Clinic; onClose: () => 
           <Field label="Email" htmlFor="e-email"><Input id="e-email" type="email" value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} /></Field>
           <Field label="Address" htmlFor="e-addr"><Input id="e-addr" value={v.address} onChange={(e) => setV({ ...v, address: e.target.value })} /></Field>
           <div className="sm:col-span-2">
-            <Field label="Description" htmlFor="e-desc"><Textarea id="e-desc" value={v.description} onChange={(e) => setV({ ...v, description: e.target.value })} /></Field>
+            <Field label="Description" htmlFor="e-desc" hint="Shown on the booking page; clinics edit it under Settings › Appearance."><Textarea id="e-desc" value={v.description} disabled /></Field>
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={!v.name.trim() || slugBad}>Save</Button>
+          <Button onClick={() => save.mutate(v)} disabled={!v.name.trim() || slugBad || save.isPending}>Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

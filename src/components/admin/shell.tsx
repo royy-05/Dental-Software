@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { signOut } from "next-auth/react";
 import {
   Activity,
   BarChart3,
@@ -25,9 +27,10 @@ import {
 import { ROLE_LABELS } from "@/types";
 import { can, isPlatformRole, type Permission } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
-import { useApp, useCurrentUser } from "@/store/app";
-import { useHydrated } from "@/components/shared/hydration";
-import { LoadingState } from "@/components/shared/states";
+import { api } from "@/lib/api/client";
+import { useCurrentUser, useMe, usePlatformRole } from "@/lib/api/session";
+import { useAdminSettings, useAdminTickets } from "@/lib/api/admin";
+import { ErrorState, LoadingState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -49,35 +52,38 @@ export const ADMIN_NAV: { href: string; label: string; icon: React.ComponentType
 ];
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
-  const hydrated = useHydrated();
+  const me = useMe();
   const user = useCurrentUser();
-  const imp = useApp((s) => s.session.impersonation);
-  const stopImp = useApp((s) => s.stopImpersonation);
-  const logout = useApp((s) => s.logout);
-  const openTickets = useApp((s) => s.db.tickets.filter((t) => t.status === "open").length);
-  const maintenance = useApp((s) => s.db.platform.maintenanceMode);
+  const platformRole = me.data?.platformRole ?? null;
+  const imp = me.data?.impersonation ?? null;
+  const tickets = useAdminTickets();
+  const settings = useAdminSettings();
+  const openTickets = (tickets.data ?? []).filter((t) => t.status === "open").length;
+  const maintenance = settings.data?.maintenanceMode ?? false;
   const router = useRouter();
   const pathname = usePathname();
+  const qc = useQueryClient();
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const allowed = user && isPlatformRole(user.role);
+  // Coming back to the admin panel ends any impersonation session (audited by the server).
   useEffect(() => {
-    if (!hydrated) return;
-    if (!user) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-  }, [hydrated, user, router, pathname]);
-  // Coming back to admin ends any impersonation session.
-  useEffect(() => {
-    if (hydrated && imp) stopImp();
-  }, [hydrated, imp, stopImp]);
+    if (!imp || !platformRole) return;
+    api("/api/admin/impersonation", { method: "DELETE" })
+      .then(() => qc.invalidateQueries({ queryKey: ["me"] }))
+      .catch(() => undefined);
+  }, [imp, platformRole, qc]);
 
-  if (!hydrated || !user) return <LoadingState label="Loading super admin panel…" className="mx-auto max-w-3xl pt-20" />;
+  if (me.isError) return <ErrorState className="mx-auto max-w-3xl pt-20" onRetry={() => me.refetch()} />;
+  if (!me.data || !user) return <LoadingState label="Loading super admin panel…" className="mx-auto max-w-3xl pt-20" />;
+  const role = platformRole;
+  const allowed = !!role && isPlatformRole(role);
   if (!allowed)
     return (
       <main id="main" className="mx-auto max-w-md py-20 text-center">
         <h1 className="text-lg font-semibold">Super admin panel is for the platform team</h1>
-        <p className="mt-2 text-sm text-muted-foreground">You&apos;re signed in as {ROLE_LABELS[user.role]}. Switch to Super Admin or Support Agent to continue.</p>
+        <p className="mt-2 text-sm text-muted-foreground">You&apos;re signed in as {ROLE_LABELS[user.role]}. Sign in as a Super Admin or Support Agent to continue.</p>
         <div className="mt-4 flex justify-center gap-2">
-          <Button asChild><Link href="/login">Switch role</Link></Button>
+          <Button asChild><Link href="/login">Switch account</Link></Button>
           <Button asChild variant="outline"><Link href="/clinic">Go to clinic panel</Link></Button>
         </div>
       </main>
@@ -90,7 +96,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         Kivi Admin
       </Link>
       <nav aria-label="Super admin sections" className="flex flex-col gap-0.5">
-        {ADMIN_NAV.filter((n) => can(user.role, n.perm)).map((n) => {
+        {ADMIN_NAV.filter((n) => can(role, n.perm)).map((n) => {
           const active = n.href === "/admin" ? pathname === "/admin" : pathname.startsWith(n.href);
           return (
             <Link
@@ -108,7 +114,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         })}
       </nav>
       <div className="mt-auto space-y-2 px-3 pb-2 text-xs text-slate-400">
-        <p className="flex items-center gap-1"><Activity className="h-3 w-3" aria-hidden /> Prototype · demo data</p>
+        <p className="flex items-center gap-1"><Activity className="h-3 w-3" aria-hidden /> Phase 2A · demo data</p>
       </div>
     </div>
   );
@@ -128,11 +134,21 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={() => setMobileOpen(true)}>
             <Menu className="h-5 w-5" />
           </Button>
-          <Badge variant={user.role === "super_admin" ? "default" : "info"}>{ROLE_LABELS[user.role]}</Badge>
+          <Badge variant={role === "super_admin" ? "default" : "info"}>{ROLE_LABELS[role]}</Badge>
           <div className="ml-auto flex items-center gap-2">
             <span className="hidden text-sm sm:inline">{user.name}</span>
-            <Button variant="ghost" size="sm" asChild><Link href="/login"><UserCog /> Switch role</Link></Button>
-            <Button variant="ghost" size="sm" onClick={() => { logout(); router.push("/login"); }}><LogOut /> <span className="hidden sm:inline">Log out</span></Button>
+            <Button variant="ghost" size="sm" asChild><Link href="/account/security"><UserCog /> Account</Link></Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={async () => {
+                qc.clear();
+                await signOut({ redirectTo: "/login" });
+                router.push("/login");
+              }}
+            >
+              <LogOut /> <span className="hidden sm:inline">Log out</span>
+            </Button>
           </div>
         </header>
         <main id="main" className="mx-auto w-full max-w-7xl p-4 sm:p-6">{children}</main>
@@ -143,7 +159,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
 /** Use inside admin pages: renders a read-only notice when the role lacks an edit permission. */
 export function ReadOnlyNotice({ perm }: { perm: Permission }) {
-  const user = useCurrentUser();
-  if (can(user?.role, perm)) return null;
+  const role = usePlatformRole();
+  if (can(role, perm)) return null;
   return <p className="mb-4 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-950">Read-only for Support Agents.</p>;
 }
