@@ -2,12 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
-import { Megaphone, Paperclip, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { Megaphone, Paperclip } from "lucide-react";
 import type { Announcement, Ticket, TicketPriority, TicketStatus } from "@/types";
 import { isPlatformRole } from "@/lib/permissions";
-import { useApp, useCurrentUser } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation, useCurrentUser } from "@/lib/api/session";
+import { useAdminAnnouncements, useAdminClinics, useAdminTickets, useAdminUsers } from "@/lib/api/admin";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
@@ -23,6 +23,7 @@ import { fmtDuration, responseMinutes } from "@/components/admin-pages/metrics";
 
 const TICKET_STATUS_VARIANT: Record<TicketStatus, BadgeProps["variant"]> = { open: "danger", pending: "warning", resolved: "success", closed: "muted" };
 const PRIORITY_VARIANT: Record<TicketPriority, BadgeProps["variant"]> = { low: "muted", normal: "secondary", high: "warning", urgent: "danger" };
+const ADMIN_KEYS = [qk.admin()];
 
 export default function SupportDeskPage() {
   return (
@@ -41,9 +42,11 @@ export default function SupportDeskPage() {
 }
 
 function Tickets() {
-  const tickets = useApp((s) => s.db.tickets);
-  const clinics = useApp((s) => s.db.clinics);
-  const users = useApp((s) => s.db.users);
+  const ticketsQ = useAdminTickets();
+  const tickets = useMemo(() => ticketsQ.data ?? [], [ticketsQ.data]);
+  const clinics = useAdminClinics().data ?? [];
+  const usersQ = useAdminUsers();
+  const users = useMemo(() => usersQ.data ?? [], [usersQ.data]);
   const [status, setStatus] = useState<"all" | "active" | TicketStatus>("active");
   const [priority, setPriority] = useState<"all" | TicketPriority>("all");
   const [assignee, setAssignee] = useState("all");
@@ -87,7 +90,7 @@ function Tickets() {
         <span className="ml-auto text-xs text-muted-foreground">Avg first response: {fmtDuration(avg)}</span>
       </div>
       <div className="rounded-lg border bg-card">
-        <ListState items={rows} emptyTitle="No tickets" emptyDescription="Tickets raised with “Raise a Ticket” in the clinic panel land here.">
+        <ListState items={rows} loading={ticketsQ.isLoading} emptyTitle="No tickets" emptyDescription="Tickets raised with “Raise a Ticket” in the clinic panel land here.">
           {(list) => (
             <Table>
               <TableHeader>
@@ -127,17 +130,15 @@ function Tickets() {
 }
 
 function TicketSheet({ ticket, team, onClose }: { ticket: Ticket | null; team: { id: string; name: string }[]; onClose: () => void }) {
-  const clinics = useApp((s) => s.db.clinics);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const clinics = useAdminClinics().data ?? [];
   const user = useCurrentUser();
   const [reply, setReply] = useState("");
-
-  const update = (patch: Partial<Ticket>, action: string) => {
-    if (!ticket) return;
-    mutate((d) => Object.assign(d.tickets.find((t) => t.id === ticket.id)!, patch));
-    logAudit({ action, category: "settings", target: `Ticket ${ticket.id}`, clinicId: ticket.clinicId });
-  };
+  const patchM = useApiMutation((v: { patch: { status?: TicketStatus; priority?: TicketPriority; assigneeId?: string | null }; msg: string }) => api(`/api/admin/tickets/${ticket?.id}`, { method: "PATCH", body: v.patch }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, v) => v.msg,
+  });
+  const replyM = useApiMutation((body: string) => api(`/api/admin/tickets/${ticket?.id}/messages`, { body: { body } }), { invalidate: ADMIN_KEYS, success: "Reply sent to clinic", onSuccess: () => setReply("") });
+  const update = (patch: { status?: TicketStatus; priority?: TicketPriority; assigneeId?: string | null }, msg: string) => ticket && patchM.mutate({ patch, msg });
 
   return (
     <Sheet open={!!ticket} onOpenChange={(o) => !o && onClose()}>
@@ -152,17 +153,17 @@ function TicketSheet({ ticket, team, onClose }: { ticket: Ticket | null; team: {
             </SheetHeader>
             <div className="grid grid-cols-3 gap-2">
               <Field label="Status" htmlFor="tk-status">
-                <NativeSelect id="tk-status" value={ticket.status} onChange={(e) => { update({ status: e.target.value as TicketStatus }, `Set ticket status: ${e.target.value}`); toast.success("Status updated"); }}>
+                <NativeSelect id="tk-status" value={ticket.status} onChange={(e) => update({ status: e.target.value as TicketStatus }, "Status updated")}>
                   {(["open", "pending", "resolved", "closed"] as const).map((s) => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}
                 </NativeSelect>
               </Field>
               <Field label="Priority" htmlFor="tk-pri">
-                <NativeSelect id="tk-pri" value={ticket.priority} onChange={(e) => { update({ priority: e.target.value as TicketPriority }, `Set ticket priority: ${e.target.value}`); toast.success("Priority updated"); }}>
+                <NativeSelect id="tk-pri" value={ticket.priority} onChange={(e) => update({ priority: e.target.value as TicketPriority }, "Priority updated")}>
                   {(["low", "normal", "high", "urgent"] as const).map((p) => <option key={p} value={p}>{p[0].toUpperCase() + p.slice(1)}</option>)}
                 </NativeSelect>
               </Field>
               <Field label="Assignee" htmlFor="tk-assign">
-                <NativeSelect id="tk-assign" value={ticket.assigneeId ?? ""} onChange={(e) => { update({ assigneeId: e.target.value || undefined }, "Assigned ticket"); toast.success("Assignee updated"); }}>
+                <NativeSelect id="tk-assign" value={ticket.assigneeId ?? ""} onChange={(e) => update({ assigneeId: e.target.value || null }, "Assignee updated")}>
                   <option value="">Unassigned</option>
                   {team.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </NativeSelect>
@@ -190,23 +191,13 @@ function TicketSheet({ ticket, team, onClose }: { ticket: Ticket | null; team: {
               onSubmit={(e) => {
                 e.preventDefault();
                 if (!reply.trim()) return;
-                const now = new Date().toISOString();
-                mutate((d) => {
-                  const t = d.tickets.find((x) => x.id === ticket.id)!;
-                  t.messages.push({ id: uid("tm"), at: now, authorName: user.name, authorRole: user.role, body: reply.trim() });
-                  if (!t.firstResponseAt) t.firstResponseAt = now;
-                  if (!t.assigneeId) t.assigneeId = user.id;
-                  if (t.status === "open") t.status = "pending";
-                });
-                logAudit({ action: "Replied to ticket", category: "settings", target: `Ticket ${ticket.id}`, clinicId: ticket.clinicId });
-                toast.success("Reply sent to clinic");
-                setReply("");
+                replyM.mutate(reply.trim());
               }}
             >
               <Field label="Reply" htmlFor="tk-reply">
                 <Textarea id="tk-reply" rows={3} value={reply} onChange={(e) => setReply(e.target.value)} />
               </Field>
-              <Button type="submit" className="justify-self-end" disabled={!reply.trim()}>Send reply</Button>
+              <Button type="submit" className="justify-self-end" disabled={!reply.trim() || replyM.isPending}>Send reply</Button>
             </form>
           </>
         )}
@@ -216,10 +207,18 @@ function TicketSheet({ ticket, team, onClose }: { ticket: Ticket | null; team: {
 }
 
 function Announcements() {
-  const announcements = useApp((s) => s.db.announcements);
-  const clinics = useApp((s) => s.db.clinics);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const announcementsQ = useAdminAnnouncements();
+  const clinicsQ = useAdminClinics();
+  const clinics = useMemo(() => clinicsQ.data ?? [], [clinicsQ.data]);
+  const createM = useApiMutation((body: { message: string; clinicIds: "all" | string[]; tone: Announcement["tone"] }) => api("/api/admin/announcements", { body }), {
+    invalidate: ADMIN_KEYS,
+    success: "Announcement published",
+    onSuccess: () => {
+      setMessage("");
+      setSelected([]);
+    },
+  });
+  const toggleM = useApiMutation((v: { id: string; active: boolean }) => api(`/api/admin/announcements/${v.id}`, { method: "PATCH", body: { active: v.active } }), { invalidate: ADMIN_KEYS, success: (_r, v) => (v.active ? "Announcement shown" : "Announcement hidden") });
   const [message, setMessage] = useState("");
   const [tone, setTone] = useState<Announcement["tone"]>("info");
   const [audience, setAudience] = useState<"all" | "selected">("all");
@@ -234,11 +233,7 @@ function Announcements() {
           onSubmit={(e) => {
             e.preventDefault();
             if (!valid) return;
-            mutate((d) => void d.announcements.unshift({ id: uid("an"), message: message.trim(), tone, clinicIds: audience === "all" ? "all" : selected, active: true, createdAt: new Date().toISOString() }));
-            logAudit({ action: "Posted announcement", category: "settings", target: audience === "all" ? "All clinics" : `${selected.length} clinics`, details: message.trim() });
-            toast.success("Announcement published");
-            setMessage("");
-            setSelected([]);
+            createM.mutate({ message: message.trim(), tone, clinicIds: audience === "all" ? "all" : selected });
           }}
         >
           <Field label="Message" htmlFor="an-msg"><Textarea id="an-msg" rows={3} value={message} onChange={(e) => setMessage(e.target.value)} /></Field>
@@ -263,11 +258,11 @@ function Announcements() {
               </div>
             )}
           </fieldset>
-          <Button type="submit" className="justify-self-start" disabled={!valid}><Megaphone /> Publish</Button>
+          <Button type="submit" className="justify-self-start" disabled={!valid || createM.isPending}><Megaphone /> Publish</Button>
         </form>
       </Section>
       <Section title="Announcements">
-        <ListState items={announcements} emptyTitle="No announcements">
+        <ListState items={announcementsQ.data ?? []} loading={announcementsQ.isLoading} emptyTitle="No announcements">
           {(list) => (
             <ul className="divide-y">
               {list.map((a) => (
@@ -278,26 +273,7 @@ function Announcements() {
                       {a.clinicIds === "all" ? "All clinics" : a.clinicIds.map((id) => clinics.find((c) => c.id === id)?.name).join(", ")} · {formatDistanceToNow(new Date(a.createdAt), { addSuffix: true })} · {a.tone}
                     </p>
                   </div>
-                  <Switch
-                    aria-label="Announcement active"
-                    checked={a.active}
-                    onCheckedChange={(on) => {
-                      mutate((d) => void (d.announcements.find((x) => x.id === a.id)!.active = on));
-                      logAudit({ action: `${on ? "Activated" : "Deactivated"} announcement`, category: "settings", target: a.message.slice(0, 40) });
-                    }}
-                  />
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    aria-label="Delete announcement"
-                    onClick={() => {
-                      mutate((d) => void (d.announcements = d.announcements.filter((x) => x.id !== a.id)));
-                      logAudit({ action: "Deleted announcement", category: "settings", target: a.message.slice(0, 40) });
-                      toast.success("Announcement deleted");
-                    }}
-                  >
-                    <Trash2 />
-                  </Button>
+                  <Switch aria-label="Announcement active" checked={a.active} onCheckedChange={(on) => toggleM.mutate({ id: a.id, active: on })} />
                 </li>
               ))}
             </ul>

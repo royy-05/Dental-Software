@@ -1,0 +1,24 @@
+# Local Postgres for development and tests.
+#   docker compose up -d
+# Creates the `kivi` owner role (migrations, jobs) and the `kivi_app` runtime role (row-level security applies).
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kivi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kivi_local_only}
+      POSTGRES_DB: kivi
+      KIVI_APP_PASSWORD: ${KIVI_APP_PASSWORD:-kivi_app_local_only}
+    ports:
+      - "5432:5432"
+    volumes:
+      - kivi-pg:/var/lib/postgresql/data
+      - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kivi -d kivi"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  kivi-pg:

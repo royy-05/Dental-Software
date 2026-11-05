@@ -5,14 +5,12 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { format } from "date-fns";
 import { CalendarPlus, CheckCircle2, ExternalLink, MapPin, Navigation, Phone } from "lucide-react";
-import { useApp } from "@/store/app";
+import { useManageView } from "@/lib/api/public";
 import { fromWall, tzAbbrev } from "@/lib/time";
-import { useHydrated } from "@/components/shared/hydration";
 import { LoadingState } from "@/components/shared/states";
 import { BrandButton, WidgetUiProvider } from "@/components/widget/brand";
 import { WidgetFooter, WidgetHeader } from "@/components/widget/chrome";
 import { buildIcs, directionsUrl, googleCalendarUrl } from "@/components/widget/calendar-links";
-import { useClinicBySlug } from "@/components/widget/use-clinic-by-slug";
 
 function hostOf(url: string) {
   try {
@@ -24,19 +22,17 @@ function hostOf(url: string) {
 
 export default function ConfirmedPage({ params }: { params: Promise<{ clinicSlug: string; token: string }> }) {
   const { clinicSlug, token } = use(params);
-  const hydrated = useHydrated();
   const search = useSearchParams();
-  const clinic = useClinicBySlug(clinicSlug);
-  const appt = useApp((s) => s.db.appointments.find((a) => a.token === token));
-  const reason = useApp((s) => s.db.reasons.find((r) => r.id === appt?.reasonId));
-  const provider = useApp((s) => s.db.providers.find((p) => p.id === appt?.providerId));
-  const referrers = useApp((s) => s.db.referrers);
-  const platform = useApp((s) => s.db.platform);
+  const view = useManageView(token);
+  const clinic = view.data?.clinic;
+  const appt = view.data?.appointment;
+  const reason = view.data?.reason;
+  const provider = view.data?.provider;
   const [stay, setStay] = useState(false);
   const [left, setLeft] = useState<number | null>(null);
 
   const refId = search.get("referrer_id") ?? appt?.referrerId;
-  const referrer = clinic && refId ? referrers.find((r) => r.clinicId === clinic.id && r.id === refId) : undefined;
+  const referrer = clinic && refId ? view.data?.referrers.find((r) => r.id === refId) : undefined;
   // Precedence: referrer > reason > clinic default.
   const redirectUrl = referrer?.redirectUrl || reason?.redirectUrl || clinic?.settings.widget.redirectUrl || "";
   const delay = Math.min(20, Math.max(0, clinic?.settings.widget.redirectDelaySec ?? 0));
@@ -63,23 +59,24 @@ export default function ConfirmedPage({ params }: { params: Promise<{ clinicSlug
     return () => clearInterval(t);
   }, [redirectUrl, delay, stay, hasAppt]);
 
-  if (!hydrated) return <LoadingState className="mx-auto max-w-xl pt-16" />;
+  if (view.isLoading) return <LoadingState className="mx-auto max-w-xl pt-16" />;
   if (!clinic || !appt)
     return (
       <main id="main" className="mx-auto max-w-md px-4 py-20 text-center">
         <h1 className="text-xl font-semibold">Booking not found</h1>
-        <p className="mt-2 text-sm text-muted-foreground">This link may have expired. Please contact the clinic.</p>
+        <p className="mt-2 text-sm text-muted-foreground">{view.error instanceof Error ? view.error.message : "This link may have expired. Please contact the clinic."}</p>
       </main>
     );
 
   const start = fromWall(appt.start);
   const end = fromWall(appt.end);
+  const manageHref = `/book/${clinicSlug}/manage/${appt.token}`;
   const event = {
     title: `${reason?.name ?? "Appointment"} at ${clinic.name}`,
     start,
     end,
     location: clinic.address,
-    description: `With ${provider?.displayName ?? "our team"}. Need to change it? ${typeof window !== "undefined" ? window.location.origin : ""}/book/${clinic.slug}/manage/${appt.token}`,
+    description: `With ${provider?.displayName ?? "our team"}. Need to change it? ${typeof window !== "undefined" ? window.location.origin : ""}${manageHref}`,
     uid: appt.id,
   };
   const downloadIcs = () => {
@@ -134,11 +131,11 @@ export default function ConfirmedPage({ params }: { params: Promise<{ clinicSlug
             </div>
             <p className="mt-5 flex items-start gap-2 text-xs text-muted-foreground">
               <MapPin className="mt-0.5 h-3.5 w-3.5" aria-hidden /> Need to change plans?{" "}
-              <Link href={`/book/${clinic.slug}/manage/${appt.token}`} className="font-semibold underline" style={{ color: clinic.branding.primaryColor }}>Reschedule or cancel</Link>
+              <Link href={manageHref} className="font-semibold underline" style={{ color: clinic.branding.primaryColor }}>Reschedule or cancel</Link>
             </p>
           </div>
         </main>
-        <WidgetFooter clinic={clinic} poweredBy={platform.branding.poweredByText} />
+        <WidgetFooter clinic={clinic} poweredBy={view.data!.platform.poweredByText} />
       </div>
     </WidgetUiProvider>
   );

@@ -1,17 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { format } from "date-fns";
-import { toast } from "sonner";
 import { Ban, CalendarClock, Check, CheckCheck, MailCheck, MessageSquareReply, Send, UserX, XCircle } from "lucide-react";
 import type { Appointment, AppointmentStatus, FormField } from "@/types";
 import { SOURCE_LABELS } from "@/types";
-import { actorName, useApp } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { useAppointment } from "@/lib/api/clinic";
+import { qk, useApiMutation, useClinicId } from "@/lib/api/session";
 import type { Slot } from "@/lib/slots";
-import { fromWall, tzAbbrev } from "@/lib/time";
+import { fromWall, toWall, tzAbbrev } from "@/lib/time";
 import { Phi } from "@/components/shared/phi";
 import { useCan } from "@/components/shared/guards";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { LoadingState, ErrorState } from "@/components/shared/states";
 import { DeliveryLog } from "@/components/messaging/delivery-log";
 import { SmsSimulator } from "@/components/messaging/sms-simulator";
 import { Badge } from "@/components/ui/badge";
@@ -45,25 +47,37 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 const NETWORK_LABEL: Record<string, string> = { in_network: "In network", out_of_network: "Out of network", not_accepted: "Not accepted", other: "Other plan" };
 
-export function AppointmentDrawer({ appointmentId, data, onClose }: { appointmentId: string | null; data: ClinicData; onClose: () => void }) {
-  const appt = data.appointments.find((a) => a.id === appointmentId) ?? null;
-  const can = useCan();
-  const logAudit = useApp((s) => s.logAudit);
+/** Keys to refresh after any appointment change. */
+function useApptInvalidate(appointmentId: string) {
+  const clinicId = useClinicId();
+  return [qk.clinicRes(clinicId, "appointments"), qk.clinicRes(clinicId, "appointment", appointmentId), qk.clinicRes(clinicId, "messages"), qk.clinicRes(clinicId, "notifications")];
+}
 
-  // Audit trail: patient record views (section 8).
-  useEffect(() => {
-    if (appointmentId && appt) logAudit({ action: "Viewed patient record", category: "phi_access", target: appointmentId, clinicId: appt.clinicId });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appointmentId]);
+export function AppointmentDrawer({ appointmentId, data, onClose }: { appointmentId: string | null; data: ClinicData; onClose: () => void }) {
+  const can = useCan();
+  // The detail request is the audited "Viewed patient record" event (section 8); the server writes it.
+  const detail = useAppointment(appointmentId);
+  const appt = detail.data ?? null;
 
   return (
     <Sheet open={!!appointmentId} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full sm:max-w-2xl">
-        {!appt ? (
-          <SheetHeader>
-            <SheetTitle>Appointment not found</SheetTitle>
-            <SheetDescription>It may belong to another clinic. Switch clinic in the top bar.</SheetDescription>
-          </SheetHeader>
+        {detail.isLoading ? (
+          <>
+            <SheetHeader>
+              <SheetTitle>Appointment</SheetTitle>
+              <SheetDescription>Loading patient record…</SheetDescription>
+            </SheetHeader>
+            <LoadingState label="Loading appointment…" />
+          </>
+        ) : !appt ? (
+          <>
+            <SheetHeader>
+              <SheetTitle>Appointment not found</SheetTitle>
+              <SheetDescription>It may belong to another clinic. Switch clinic in the top bar.</SheetDescription>
+            </SheetHeader>
+            {detail.isError && <ErrorState onRetry={() => detail.refetch()} />}
+          </>
         ) : (
           <DrawerBody appt={appt} data={data} canManage={can("appointments:manage")} />
         )}
@@ -73,9 +87,20 @@ export function AppointmentDrawer({ appointmentId, data, onClose }: { appointmen
 }
 
 function DrawerBody({ appt, data, canManage }: { appt: Appointment; data: ClinicData; canManage: boolean }) {
-  const setStatus = useApp((s) => s.setAppointmentStatus);
-  const notify = useApp((s) => s.notify);
-  const addNote = useApp((s) => s.addAppointmentNote);
+  const clinicId = useClinicId();
+  const invalidate = useApptInvalidate(appt.id);
+  const setStatus = useApiMutation(
+    (v: { status: AppointmentStatus; declineReason?: string; note?: string; msg: string }) => api<Appointment>(`/api/clinics/${clinicId}/appointments/${appt.id}/status`, { body: { status: v.status, declineReason: v.declineReason, note: v.note } }),
+    { invalidate, success: (_r, v) => v.msg },
+  );
+  const notify = useApiMutation((event: "resend" | "confirmation_request") => api<{ sent: number }>(`/api/clinics/${clinicId}/appointments/${appt.id}/notify`, { body: { event } }), {
+    invalidate,
+    success: (r, event) =>
+      event === "resend"
+        ? r.sent ? `Confirmation resent (${r.sent} message${r.sent > 1 ? "s" : ""})` : "Nothing sent: templates are off"
+        : r.sent ? "Confirmation request sent" : "Nothing sent: SMS consent or template is off",
+  });
+  const addNote = useApiMutation((text: string) => api<Appointment>(`/api/clinics/${clinicId}/appointments/${appt.id}/notes`, { body: { text } }), { invalidate, success: "Note added" });
   const [note, setNote] = useState("");
   const [declineOpen, setDeclineOpen] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
@@ -91,10 +116,8 @@ function DrawerBody({ appt, data, canManage }: { appt: Appointment; data: Clinic
     return new Map(all.map((f) => [f.id, f.label]));
   }, [data.flow, reason]);
 
-  const act = (status: AppointmentStatus, msg: string) => {
-    setStatus(appt.id, status, { by: actorName() });
-    toast.success(msg);
-  };
+  const act = (status: AppointmentStatus, msg: string) => setStatus.mutate({ status, msg });
+  const busy = setStatus.isPending || notify.isPending;
   const active = appt.status === "unconfirmed" || appt.status === "confirmed";
 
   return (
@@ -116,40 +139,26 @@ function DrawerBody({ appt, data, canManage }: { appt: Appointment; data: Clinic
       {canManage && (
         <div className="flex flex-wrap gap-2" aria-label="Appointment actions">
           {appt.status === "unconfirmed" && (
-            <Button size="sm" onClick={() => act("confirmed", "Appointment confirmed")}><Check /> Confirm</Button>
+            <Button size="sm" disabled={busy} onClick={() => act("confirmed", "Appointment confirmed")}><Check /> Confirm</Button>
           )}
-          <Button size="sm" variant="outline" onClick={() => setRescheduleOpen(true)}><CalendarClock /> Reschedule</Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => setRescheduleOpen(true)}><CalendarClock /> Reschedule</Button>
           {active && (
-            <Button size="sm" variant="outline" onClick={() => act("cancelled", "Appointment cancelled and patient notified")}><XCircle /> Cancel</Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => act("cancelled", "Appointment cancelled and patient notified")}><XCircle /> Cancel</Button>
           )}
           {appt.status === "unconfirmed" && (
-            <Button size="sm" variant="outline" onClick={() => setDeclineOpen(true)}><Ban /> Decline</Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => setDeclineOpen(true)}><Ban /> Decline</Button>
           )}
           {(active || appt.status === "no_show") && (
-            <Button size="sm" variant="outline" onClick={() => act("complete", "Marked complete")}><CheckCheck /> Mark complete</Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => act("complete", "Marked complete")}><CheckCheck /> Mark complete</Button>
           )}
           {(active || appt.status === "complete") && (
-            <Button size="sm" variant="outline" onClick={() => act("no_show", "Marked as no-show")}><UserX /> No-show</Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => act("no_show", "Marked as no-show")}><UserX /> No-show</Button>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              const msgs = notify(appt.id, "resend");
-              toast.success(msgs.length ? `Confirmation resent (${msgs.length} message${msgs.length > 1 ? "s" : ""})` : "Nothing sent: templates are off");
-            }}
-          >
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => notify.mutate("resend")}>
             <MailCheck /> Resend confirmation
           </Button>
           {appt.status === "unconfirmed" && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                const msgs = notify(appt.id, "confirmation_request");
-                toast.success(msgs.length ? "Confirmation request sent" : "Nothing sent: SMS consent or template is off");
-              }}
-            >
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => notify.mutate("confirmation_request")}>
               <Send /> Ask to confirm
             </Button>
           )}
@@ -270,21 +279,16 @@ function DrawerBody({ appt, data, canManage }: { appt: Appointment; data: Clinic
           onSubmit={(e) => {
             e.preventDefault();
             if (!note.trim()) return;
-            addNote(appt.id, note.trim());
-            setNote("");
-            toast.success("Note added");
+            addNote.mutate(note.trim(), { onSuccess: () => setNote("") });
           }}
         >
           <Label htmlFor="appt-note" className="sr-only">Add internal note</Label>
           <Textarea id="appt-note" rows={2} placeholder="Add an internal note…" value={note} onChange={(e) => setNote(e.target.value)} />
-          <Button type="submit" size="sm" variant="secondary" className="justify-self-start" disabled={!note.trim()}>Add note</Button>
+          <Button type="submit" size="sm" variant="secondary" className="justify-self-start" disabled={!note.trim() || addNote.isPending}>Add note</Button>
         </form>
       </Section>
 
-      <DeclineDialog open={declineOpen} onOpenChange={setDeclineOpen} onConfirm={(reasonText) => {
-        setStatus(appt.id, "declined", { by: actorName(), declineReason: reasonText });
-        toast.success("Request declined and patient notified");
-      }} />
+      <DeclineDialog open={declineOpen} onOpenChange={setDeclineOpen} onConfirm={(reasonText) => setStatus.mutate({ status: "declined", declineReason: reasonText, msg: "Request declined and patient notified" })} />
       <RescheduleDialog open={rescheduleOpen} onOpenChange={setRescheduleOpen} appt={appt} data={data} />
     </div>
   );
@@ -336,9 +340,18 @@ function DeclineDialog({ open, onOpenChange, onConfirm }: { open: boolean; onOpe
 }
 
 function RescheduleDialog({ open, onOpenChange, appt, data }: { open: boolean; onOpenChange: (o: boolean) => void; appt: Appointment; data: ClinicData }) {
-  const reschedule = useApp((s) => s.rescheduleAppointment);
-  const [providerId, setProviderId] = useState(appt.providerId);
+  const clinicId = useClinicId();
+  const invalidate = useApptInvalidate(appt.id);
   const [slot, setSlot] = useState<Slot | null>(null);
+  const reschedule = useApiMutation((v: { start: string; providerId: string }) => api<Appointment>(`/api/clinics/${clinicId}/appointments/${appt.id}/reschedule`, { body: v }), {
+    invalidate,
+    success: "Rescheduled and patient notified",
+    onSuccess: () => {
+      setSlot(null);
+      onOpenChange(false);
+    },
+  });
+  const [providerId, setProviderId] = useState(appt.providerId);
   const reason = data.reasons.find((r) => r.id === appt.reasonId);
   const providers = data.providers.filter((p) => p.active && reason?.providerIds.includes(p.id));
   return (
@@ -359,22 +372,12 @@ function RescheduleDialog({ open, onOpenChange, appt, data }: { open: boolean; o
               </SelectContent>
             </Select>
           </div>
-          <SlotPicker clinicId={appt.clinicId} reasonId={appt.reasonId} providerId={providerId} ignoreAppointmentId={appt.id} value={slot} onChange={setSlot} initialDate={appt.start.slice(0, 10)} />
+          <SlotPicker reasonId={appt.reasonId} providerId={providerId} ignoreAppointmentId={appt.id} value={slot} onChange={setSlot} initialDate={appt.start.slice(0, 10)} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Back</Button>
-          <Button
-            disabled={!slot}
-            onClick={() => {
-              if (!slot) return;
-              const res = reschedule(appt.id, { start: slot.start, providerId: slot.providerId, operatoryId: slot.operatoryId }, actorName());
-              if (!res.ok) return toast.error(res.error ?? "Could not reschedule");
-              toast.success("Rescheduled and patient notified");
-              setSlot(null);
-              onOpenChange(false);
-            }}
-          >
-            Save new time
+          <Button disabled={!slot || reschedule.isPending} onClick={() => slot && reschedule.mutate({ start: toWall(slot.start), providerId: slot.providerId })}>
+            {reschedule.isPending ? "Saving…" : "Save new time"}
           </Button>
         </DialogFooter>
       </DialogContent>

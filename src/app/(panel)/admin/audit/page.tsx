@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import type { AuditEntry } from "@/types";
 import { ROLE_LABELS, type Role } from "@/types";
-import { useApp } from "@/store/app";
+import { useAdminAudit, useAdminClinics } from "@/lib/api/admin";
 import { downloadCsv } from "@/lib/utils";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
@@ -47,22 +47,14 @@ export default function AuditPage() {
 }
 
 function Audit() {
-  const audit = useApp((s) => s.db.audit);
-  const clinics = useApp((s) => s.db.clinics);
-  const logAudit = useApp((s) => s.logAudit);
+  const clinics = useAdminClinics().data ?? [];
   const [category, setCategory] = useState<"all" | AuditEntry["category"]>("all");
   const [clinicId, setClinicId] = useState("all");
   const [q, setQ] = useState("");
   const [limit, setLimit] = useState(50);
-  const rows = useMemo(
-    () =>
-      audit
-        .filter((a) => category === "all" || a.category === category)
-        .filter((a) => clinicId === "all" || a.clinicId === clinicId)
-        .filter((a) => !q || `${a.actorName} ${a.action} ${a.target} ${a.ip} ${a.details ?? ""}`.toLowerCase().includes(q.toLowerCase()))
-        .sort((a, b) => b.at.localeCompare(a.at)),
-    [audit, category, clinicId, q],
-  );
+  // Category, clinic and search are applied by the server; the latest 1,000 matches are loaded.
+  const auditQ = useAdminAudit({ category: category === "all" ? undefined : category, clinicId: clinicId === "all" ? undefined : clinicId, q: q.trim() || undefined, limit: 1000 });
+  const rows = useMemo(() => auditQ.data ?? [], [auditQ.data]);
   const clinicName = (id?: string) => (id ? clinics.find((c) => c.id === id)?.name ?? id : "Platform");
 
   return (
@@ -78,7 +70,6 @@ function Audit() {
                 "audit-log.csv",
                 rows.map((a) => ({ at: a.at, actor: a.actorName, role: roleLabel(a.actorRole), action: a.action, category: a.category, target: a.target, clinic: clinicName(a.clinicId), ip: a.ip, details: a.details ?? "" })),
               );
-              logAudit({ action: "Exported audit log CSV", category: "export", target: "Audit log" });
             }}
           >
             Export CSV
@@ -100,7 +91,7 @@ function Audit() {
         </Button>
       </div>
       <div className="rounded-lg border bg-card">
-        <ListState items={rows} emptyTitle="No audit entries match">
+        <ListState items={rows} loading={auditQ.isLoading} emptyTitle="No audit entries match">
           {(list) => (
             <>
               <Table>

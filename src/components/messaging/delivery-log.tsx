@@ -5,7 +5,8 @@ import { format } from "date-fns";
 import { ArrowDownLeft, ArrowUpRight, Mail, MessageSquare } from "lucide-react";
 import type { DeliveryStatus, MessageLog } from "@/types";
 import { TEMPLATE_EVENT_LABELS } from "@/types";
-import { useApp } from "@/store/app";
+import { useMessages } from "@/lib/api/clinic";
+import { useAccessibleClinics } from "@/lib/api/session";
 import { downloadCsv } from "@/lib/utils";
 import { usePhiText } from "@/components/shared/phi";
 import { ListState } from "@/components/shared/states";
@@ -24,6 +25,7 @@ export const DELIVERY_BADGE: Record<DeliveryStatus, BadgeProps["variant"]> = {
   opened: "violet",
   failed: "danger",
   bounced: "warning",
+  skipped: "muted",
 };
 
 export function eventLabel(e: MessageLog["event"]): string {
@@ -33,7 +35,8 @@ export function eventLabel(e: MessageLog["event"]): string {
 
 /**
  * Delivery log (section 7): sent, delivered, failed, opened, plus quiet-hours scheduling.
- * Used in the clinic panel (Settings > Notifications, appointment drawer) and super admin Messaging.
+ * Used in the clinic panel (Settings > Notifications, appointment drawer). Reads the clinic's delivery log from the
+ * API (the selected clinic); `clinicId` is kept for callers but the data always belongs to the selected clinic.
  */
 export function DeliveryLog({
   clinicId,
@@ -46,8 +49,9 @@ export function DeliveryLog({
   compact?: boolean;
   showClinic?: boolean;
 }) {
-  const messages = useApp((s) => s.db.messages);
-  const clinics = useApp((s) => s.db.clinics);
+  const query = useMessages({ appointmentId, limit: compact ? 100 : 500 }, { refetchInterval: 30_000 });
+  const messages = useMemo(() => query.data ?? [], [query.data]);
+  const clinics = useAccessibleClinics();
   const phi = usePhiText();
   const [channel, setChannel] = useState<"all" | "email" | "sms">("all");
   const [status, setStatus] = useState<"all" | DeliveryStatus>("all");
@@ -112,7 +116,7 @@ export function DeliveryLog({
           </div>
         </div>
       )}
-      <ListState items={rows} emptyTitle="No messages yet" emptyDescription="Booking, cancel and reschedule events write simulated email and SMS entries here.">
+      <ListState items={rows} loading={query.isLoading} emptyTitle="No messages yet" emptyDescription="Booking, cancel and reschedule events queue email and SMS entries here; the worker delivers them.">
         {(list) => (
           <>
             <div className="rounded-md border">

@@ -3,28 +3,31 @@
 import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { Trash2 } from "lucide-react";
-import { toast } from "sonner";
-import type { Clinic, PlatformSettings } from "@/types";
-import { useApp } from "@/store/app";
+import type { Clinic, DeliveryStatus, MessageLog, PlatformSettings } from "@/types";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation } from "@/lib/api/session";
+import { useAdminClinics, useAdminMessages, useAdminOptOuts, useAdminPlans, useAdminSettings } from "@/lib/api/admin";
 import { PageHeader } from "@/components/shared/page-header";
-import { ListState } from "@/components/shared/states";
+import { ListState, LoadingState } from "@/components/shared/states";
 import { usePhiText } from "@/components/shared/phi";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DeliveryLog } from "@/components/messaging/delivery-log";
 import { SmsSimulator } from "@/components/messaging/sms-simulator";
 import { AdminGuard, Field, NativeSelect, Section, useAdminCan } from "@/components/admin-pages/common";
 import { ReadOnlyNotice } from "@/components/admin/shell";
 
 const REG_VARIANT: Record<Clinic["smsRegistration"], BadgeProps["variant"]> = { approved: "success", pending: "warning", rejected: "danger", not_started: "muted" };
+const DELIVERY_VARIANT: Record<DeliveryStatus, BadgeProps["variant"]> = { queued: "muted", scheduled: "info", sent: "secondary", delivered: "success", opened: "violet", failed: "danger", bounced: "warning", skipped: "muted" };
+const ADMIN_KEYS = [qk.admin()];
 
 export default function MessagingPage() {
   return (
     <AdminGuard perm="admin:messaging:view">
-      <PageHeader title="Messaging" description="Simulated email and SMS. Nothing is actually sent in the prototype." />
+      <PageHeader title="Messaging" description="Email goes through the configured email driver; SMS uses the mock driver until a provider is chosen (Phase 2B)." />
       <ReadOnlyNotice perm="admin:messaging:edit" />
       <Tabs defaultValue="log">
         <TabsList>
@@ -36,7 +39,7 @@ export default function MessagingPage() {
         </TabsList>
         <TabsContent value="log">
           <Section title="Delivery log" description="Every booking, cancel and reschedule writes email and SMS entries. Click a row for the full message.">
-            <DeliveryLog showClinic />
+            <PlatformDeliveryLog />
           </Section>
         </TabsContent>
         <TabsContent value="simulator"><Simulator /></TabsContent>
@@ -48,34 +51,111 @@ export default function MessagingPage() {
   );
 }
 
-function Simulator() {
-  const clinics = useApp((s) => s.db.clinics);
-  const live = useMemo(() => clinics.filter((c) => !c.deletedAt && c.status !== "churned"), [clinics]);
-  const [clinicId, setClinicId] = useState(live[0]?.id ?? "");
+function PlatformDeliveryLog() {
+  const clinics = useAdminClinics().data ?? [];
+  const [clinicId, setClinicId] = useState("");
+  const [channel, setChannel] = useState<"" | "email" | "sms">("");
+  const [status, setStatus] = useState("");
+  const q = useAdminMessages({ clinicId: clinicId || undefined, channel: channel || undefined, status: status || undefined, limit: 300 });
+  const [open, setOpen] = useState<MessageLog | null>(null);
+  const phi = usePhiText();
+  const name = (id: string) => clinics.find((c) => c.id === id)?.name ?? id;
   return (
-    <Section title="Two-way SMS simulator" description="Act as a patient replying to a reminder. Reply C confirms the appointment; STOP and HELP are handled automatically.">
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        <NativeSelect aria-label="Clinic" className="h-9" value={clinicId} onChange={(e) => setClinicId(e.target.value)}>
+          <option value="">All clinics</option>
+          {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </NativeSelect>
+        <NativeSelect aria-label="Channel" className="h-9" value={channel} onChange={(e) => setChannel(e.target.value as typeof channel)}>
+          <option value="">Email and SMS</option>
+          <option value="email">Email</option>
+          <option value="sms">SMS</option>
+        </NativeSelect>
+        <NativeSelect aria-label="Status" className="h-9" value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">All statuses</option>
+          {(Object.keys(DELIVERY_VARIANT) as DeliveryStatus[]).map((s) => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}
+        </NativeSelect>
+      </div>
+      <ListState items={q.data ?? []} loading={q.isLoading} emptyTitle="No messages match">
+        {(list) => (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>When</TableHead>
+                <TableHead>Clinic</TableHead>
+                <TableHead>Channel</TableHead>
+                <TableHead>To</TableHead>
+                <TableHead>Event</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {list.map((m) => (
+                <TableRow key={m.id} className="cursor-pointer" onClick={() => setOpen(m)}>
+                  <TableCell className="whitespace-nowrap text-xs">{format(new Date(m.createdAt), "MMM d, h:mm a")}</TableCell>
+                  <TableCell className="text-sm">{name(m.clinicId)}</TableCell>
+                  <TableCell className="text-xs uppercase">{m.channel}{m.direction === "inbound" ? " (in)" : ""}</TableCell>
+                  <TableCell className="text-xs">{m.recipientType === "patient" ? phi(m.to) : m.to}</TableCell>
+                  <TableCell className="text-xs">{m.event.replace(/_/g, " ")}</TableCell>
+                  <TableCell>
+                    <Badge variant={DELIVERY_VARIANT[m.status]} className="capitalize">{m.status}</Badge>
+                    {m.error && <span className="block max-w-[200px] truncate text-xs text-muted-foreground">{m.error}</span>}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </ListState>
+      <Dialog open={!!open} onOpenChange={(o) => !o && setOpen(null)}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader><DialogTitle>{open?.subject ?? open?.event.replace(/_/g, " ")}</DialogTitle></DialogHeader>
+          {open && (
+            <div className="grid gap-2 text-sm">
+              <p className="text-xs text-muted-foreground">{open.channel.toUpperCase()} · to {open.recipientType === "patient" ? phi(open.to) : open.to} · {format(new Date(open.createdAt), "MMM d, yyyy h:mm a")} · {open.status}{open.scheduledFor ? ` · scheduled ${format(new Date(open.scheduledFor), "MMM d, h:mm a")}` : ""}</p>
+              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm">{open.recipientType === "patient" ? phi(open.body) : open.body}</pre>
+              {open.error && <p className="text-xs text-destructive">{open.error}</p>}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Simulator() {
+  const clinicsQ = useAdminClinics();
+  const live = useMemo(() => (clinicsQ.data ?? []).filter((c) => !c.deletedAt && c.status !== "churned"), [clinicsQ.data]);
+  const [clinicId, setClinicId] = useState("");
+  const selected = clinicId || live[0]?.id || "";
+  return (
+    <Section title="Two-way SMS simulator" description="Act as a patient replying to a reminder (DEMO_MODE only). Reply C confirms the appointment; STOP and HELP are handled automatically. Production uses the same handler behind the SMS provider webhook.">
       <div className="mb-4 max-w-xs">
         <Field label="Clinic" htmlFor="sim-clinic">
-          <NativeSelect id="sim-clinic" value={clinicId} onChange={(e) => setClinicId(e.target.value)}>
+          <NativeSelect id="sim-clinic" value={selected} onChange={(e) => setClinicId(e.target.value)}>
             {live.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </NativeSelect>
         </Field>
       </div>
-      {clinicId && <SmsSimulator key={clinicId} clinicId={clinicId} />}
+      {clinicsQ.isLoading && <LoadingState />}
+      {selected && <SmsSimulator key={selected} clinicId={selected} />}
     </Section>
   );
 }
 
 function ClinicRegistration() {
-  const clinics = useApp((s) => s.db.clinics);
-  const plans = useApp((s) => s.db.plans);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const clinicsQ = useAdminClinics();
+  const plans = useAdminPlans().data ?? [];
   const canEdit = useAdminCan()("admin:messaging:edit");
-  const live = useMemo(() => clinics.filter((c) => !c.deletedAt), [clinics]);
+  const live = useMemo(() => (clinicsQ.data ?? []).filter((c) => !c.deletedAt), [clinicsQ.data]);
+  const regM = useApiMutation((v: { id: string; name: string; value: Clinic["smsRegistration"] }) => api(`/api/admin/clinics/${v.id}`, { method: "PATCH", body: { smsRegistration: v.value } }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, v) => `${v.name}: 10DLC ${v.value.replace("_", " ")}`,
+  });
   return (
     <Section title="SMS registration (US 10DLC) and credits" description="Credit limits come from the plan; usage resets each billing cycle.">
-      <ListState items={live} emptyTitle="No clinics">
+      <ListState items={live} loading={clinicsQ.isLoading} emptyTitle="No clinics">
         {(list) => (
           <Table>
             <TableHeader>
@@ -95,17 +175,7 @@ function ClinicRegistration() {
                     <TableCell className="font-medium">{c.name}</TableCell>
                     <TableCell>
                       {canEdit ? (
-                        <NativeSelect
-                          aria-label={`10DLC status for ${c.name}`}
-                          className="h-8 text-xs"
-                          value={c.smsRegistration}
-                          onChange={(e) => {
-                            const v = e.target.value as Clinic["smsRegistration"];
-                            mutate((d) => void (d.clinics.find((x) => x.id === c.id)!.smsRegistration = v));
-                            logAudit({ action: `Set 10DLC status: ${v}`, category: "settings", target: c.name, clinicId: c.id });
-                            toast.success(`${c.name}: 10DLC ${v.replace("_", " ")}`);
-                          }}
-                        >
+                        <NativeSelect aria-label={`10DLC status for ${c.name}`} className="h-8 text-xs" value={c.smsRegistration} onChange={(e) => regM.mutate({ id: c.id, name: c.name, value: e.target.value as Clinic["smsRegistration"] })}>
                           <option value="not_started">Not started</option>
                           <option value="pending">Pending</option>
                           <option value="approved">Approved</option>
@@ -136,19 +206,17 @@ function ClinicRegistration() {
 }
 
 function OptOuts() {
-  const optOuts = useApp((s) => s.db.optOuts);
-  const messages = useApp((s) => s.db.messages);
-  const clinics = useApp((s) => s.db.clinics);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const optOutsQ = useAdminOptOuts();
+  const bouncesQ = useAdminMessages({ status: "bounced", limit: 50 });
+  const clinics = useAdminClinics().data ?? [];
   const canEdit = useAdminCan()("admin:messaging:edit");
   const phi = usePhiText();
-  const bounces = useMemo(() => messages.filter((m) => m.status === "bounced"), [messages]);
   const name = (id: string) => clinics.find((c) => c.id === id)?.name ?? id;
+  const removeM = useApiMutation((id: string) => api(`/api/admin/opt-outs/${id}`, { method: "DELETE" }), { invalidate: ADMIN_KEYS, success: "Removed from opt-out list" });
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <Section title="SMS opt-outs" description="Numbers that replied STOP. Texts to them are blocked.">
-        <ListState items={optOuts} emptyTitle="No opt-outs">
+        <ListState items={optOutsQ.data ?? []} loading={optOutsQ.isLoading} emptyTitle="No opt-outs">
           {(list) => (
             <ul className="divide-y text-sm">
               {list.map((o) => (
@@ -157,16 +225,7 @@ function OptOuts() {
                     {phi(o.phone)} <span className="text-xs text-muted-foreground">· {name(o.clinicId)} · {format(new Date(o.at), "MMM d")} · {o.kind.replace("_", " ")}</span>
                   </span>
                   {canEdit && (
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      aria-label="Remove from opt-out list"
-                      onClick={() => {
-                        mutate((d) => void (d.optOuts = d.optOuts.filter((x) => x.id !== o.id)));
-                        logAudit({ action: "Removed opt-out", category: "settings", target: "SMS opt-out list", clinicId: o.clinicId });
-                        toast.success("Removed from opt-out list");
-                      }}
-                    >
+                    <Button size="xs" variant="ghost" aria-label="Remove from opt-out list" onClick={() => removeM.mutate(o.id)}>
                       <Trash2 />
                     </Button>
                   )}
@@ -177,10 +236,10 @@ function OptOuts() {
         </ListState>
       </Section>
       <Section title="Email bounces" description="Bounced messages from the delivery log.">
-        <ListState items={bounces} emptyTitle="No bounces">
+        <ListState items={bouncesQ.data ?? []} loading={bouncesQ.isLoading} emptyTitle="No bounces">
           {(list) => (
             <ul className="divide-y text-sm">
-              {list.slice(0, 50).map((m) => (
+              {list.map((m) => (
                 <li key={m.id} className="py-2">
                   {phi(m.to)} <span className="text-xs text-muted-foreground">· {name(m.clinicId)} · {format(new Date(m.createdAt), "MMM d")} · {m.error}</span>
                 </li>
@@ -194,23 +253,24 @@ function OptOuts() {
 }
 
 function ProviderSettings() {
-  const messaging = useApp((s) => s.db.platform.messaging);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const settings = useAdminSettings();
+  if (!settings.data) return <LoadingState />;
+  return <ProviderSettingsForm key={JSON.stringify(settings.data.messaging)} messaging={settings.data.messaging} />;
+}
+
+function ProviderSettingsForm({ messaging }: { messaging: PlatformSettings["messaging"] }) {
   const canEdit = useAdminCan()("admin:messaging:edit");
   const [v, setV] = useState<PlatformSettings["messaging"]>(messaging);
   const [pool, setPool] = useState(messaging.smsNumberPool.join(", "));
   const hours = Array.from({ length: 24 }, (_, i) => i);
+  const saveM = useApiMutation((body: PlatformSettings["messaging"]) => api("/api/admin/settings", { method: "PATCH", body: { messaging: body } }), { invalidate: ADMIN_KEYS, success: "Messaging settings saved" });
   return (
-    <Section title="SMS and email providers" description="Production uses SendGrid or Amazon SES for email and Twilio for SMS (phase 2).">
+    <Section title="SMS and email providers" description="Email: Resend driver in production (EMAIL_DRIVER). SMS: mock driver until the provider is chosen; Twilio and MSG91 adapters are Phase 2B stubs.">
       <form
         className="grid gap-4 sm:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault();
-          const next = { ...v, smsNumberPool: pool.split(",").map((s) => s.trim()).filter(Boolean) };
-          mutate((d) => void (d.platform.messaging = next));
-          logAudit({ action: "Updated messaging settings", category: "settings", target: "Platform messaging" });
-          toast.success("Messaging settings saved");
+          saveM.mutate({ ...v, smsNumberPool: pool.split(",").map((s) => s.trim()).filter(Boolean) });
         }}
       >
         <fieldset disabled={!canEdit} className="contents">
@@ -239,7 +299,7 @@ function ProviderSettings() {
               {hours.map((h) => <option key={h} value={h}>{h}:00</option>)}
             </NativeSelect>
           </Field>
-          {canEdit && <Button type="submit" className="justify-self-start">Save settings</Button>}
+          {canEdit && <Button type="submit" className="justify-self-start" disabled={saveM.isPending}>Save settings</Button>}
         </fieldset>
       </form>
     </Section>

@@ -3,13 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Search, Trash2 } from "lucide-react";
-import type { ClinicInsurance, InsuranceSettings, NetworkStatus } from "@/types";
-import { useApp } from "@/store/app";
-import { uid } from "@/lib/utils";
+import type { InsuranceSettings, NetworkStatus } from "@/types";
+import { api } from "@/lib/api/client";
+import { clinicPath } from "@/lib/api/clinic";
+import { useApiMutation } from "@/lib/api/session";
 import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
-import { useHydrated } from "@/components/shared/hydration";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,27 +28,21 @@ const STATUS_OPTIONS: { value: NetworkStatus; label: string }[] = [
 const STATUS_BADGE: Record<NetworkStatus, "success" | "warning" | "danger"> = { in_network: "success", out_of_network: "warning", not_accepted: "danger" };
 
 function CarrierList() {
-  const hydrated = useHydrated();
-  const { clinicId } = useClinicConfig();
-  const all = useApp((s) => s.db.clinicInsurances);
-  const carriers = useApp((s) => s.db.carriers);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const { clinicId, insurances, carriers, isLoading } = useClinicConfig();
+  const base = clinicPath(clinicId, "/insurances");
+  const addMut = useApiMutation(({ body }: { body: { carrierIds?: string[]; customNames?: string[] }; what: string }) => api(base, { body }), { success: (_r, v) => `Added ${v.what}` });
+  const setStatus = useApiMutation(({ id, status }: { id: string; name: string; status: NetworkStatus }) => api(`${base}/${id}`, { method: "PATCH", body: { status } }), {
+    success: (_r, v) => `${v.name}: ${STATUS_OPTIONS.find((s) => s.value === v.status)?.label}`,
+  });
+  const remove = useApiMutation(({ id }: { id: string; name: string }) => api(`${base}/${id}`, { method: "DELETE" }), { success: (_r, v) => `${v.name} removed` });
   const [q, setQ] = useState("");
   const [bulk, setBulk] = useState("");
-  const mine = useMemo(() => all.filter((i) => i.clinicId === clinicId).sort((a, b) => a.name.localeCompare(b.name)), [all, clinicId]);
+  const mine = useMemo(() => [...insurances].sort((a, b) => a.name.localeCompare(b.name)), [insurances]);
   const available = useMemo(
     () => carriers.filter((c) => !mine.some((m) => m.carrierId === c.id) && c.name.toLowerCase().includes(q.toLowerCase())),
     [carriers, mine, q],
   );
 
-  const add = (items: Omit<ClinicInsurance, "id" | "clinicId">[], what: string) => {
-    mutate((db) => {
-      for (const it of items) db.clinicInsurances.push({ ...it, id: uid("ci"), clinicId });
-    });
-    logAudit({ action: `Added insurance ${what}`, category: "settings", target: "Insurances", clinicId });
-    toast.success(`Added ${what}`);
-  };
 
   return (
     <Card>
@@ -57,7 +51,7 @@ function CarrierList() {
         <CardDescription>Patients pick from this list. The status decides which warning they see.</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-6">
-        <ListState items={mine} loading={!hydrated} emptyTitle="No carriers yet" emptyDescription="Pick carriers from the master list or add your own below.">
+        <ListState items={mine} loading={isLoading} emptyTitle="No carriers yet" emptyDescription="Pick carriers from the master list or add your own below.">
           {(list) => (
             <ul className="divide-y rounded-md border">
               {list.map((i) => (
@@ -71,10 +65,7 @@ function CarrierList() {
                     className="h-9 rounded-md border border-input bg-card px-2 text-sm"
                     value={i.status}
                     onChange={(e) => {
-                      const status = e.target.value as NetworkStatus;
-                      mutate((db) => void (db.clinicInsurances.find((x) => x.id === i.id)!.status = status));
-                      logAudit({ action: `Set ${i.name} to ${status}`, category: "settings", target: "Insurances", clinicId });
-                      toast.success(`${i.name}: ${STATUS_OPTIONS.find((s) => s.value === status)?.label}`);
+                      setStatus.mutate({ id: i.id, name: i.name, status: e.target.value as NetworkStatus });
                     }}
                   >
                     {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -83,11 +74,7 @@ function CarrierList() {
                     variant="ghost"
                     size="icon"
                     aria-label={`Remove ${i.name}`}
-                    onClick={() => {
-                      mutate((db) => void (db.clinicInsurances = db.clinicInsurances.filter((x) => x.id !== i.id)));
-                      logAudit({ action: `Removed insurance ${i.name}`, category: "settings", target: "Insurances", clinicId });
-                      toast.success(`${i.name} removed`);
-                    }}
+                    onClick={() => remove.mutate({ id: i.id, name: i.name })}
                   >
                     <Trash2 />
                   </Button>
@@ -105,7 +92,7 @@ function CarrierList() {
           <div className="flex flex-wrap gap-2">
             {available.length === 0 && <p className="text-xs text-muted-foreground">No more carriers match.</p>}
             {available.map((c) => (
-              <Button key={c.id} variant="outline" size="sm" onClick={() => add([{ carrierId: c.id, name: c.name, status: "in_network", custom: false }], c.name)}>
+              <Button key={c.id} variant="outline" size="sm" onClick={() => addMut.mutate({ body: { carrierIds: [c.id] }, what: c.name })}>
                 <Plus /> {c.name}
               </Button>
             ))}
@@ -117,7 +104,7 @@ function CarrierList() {
             e.preventDefault();
             const names = parseBulkNames(bulk, mine.map((m) => m.name));
             if (!names.length) return void toast.error("Nothing new to add. Separate names with commas.");
-            add(names.map((name) => ({ name, status: "in_network" as const, custom: true })), names.length === 1 ? names[0] : `${names.length} custom carriers`);
+            addMut.mutate({ body: { customNames: names }, what: names.length === 1 ? names[0] : `${names.length} custom carriers` });
             setBulk("");
           }}
         >
@@ -134,8 +121,7 @@ function CarrierList() {
 
 function InsuranceSettingsCard() {
   const { clinic, clinicId } = useClinicConfig();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const save = useApiMutation((body: InsuranceSettings) => api(clinicPath(clinicId, "/insurance-settings"), { method: "PUT", body }), { success: "Insurance settings saved" });
   const [s, setS] = useState<InsuranceSettings | null>(null);
   const [newQ, setNewQ] = useState("");
   useEffect(() => setS(clinic ? structuredClone(clinic.insuranceSettings) : null), [clinic]);
@@ -192,9 +178,7 @@ function InsuranceSettingsCard() {
           <Button
             disabled={!dirty}
             onClick={() => {
-              mutate((db) => void (db.clinics.find((c) => c.id === clinicId)!.insuranceSettings = { ...s, extraQuestions: s.extraQuestions.filter((q) => q.trim()) }));
-              logAudit({ action: "Updated insurance settings", category: "settings", target: "Insurances", clinicId });
-              toast.success("Insurance settings saved");
+              save.mutate({ ...s, extraQuestions: s.extraQuestions.filter((q) => q.trim()) });
             }}
           >
             Save settings

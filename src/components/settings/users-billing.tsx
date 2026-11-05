@@ -3,15 +3,16 @@
 import { useMemo, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { UserPlus } from "lucide-react";
-import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import type { Clinic, Role } from "@/types";
 import { ROLE_LABELS } from "@/types";
-import { useApp, useCurrentUser, useEffectiveRole } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { clinicPath, useClinicUsers, type ClinicUser } from "@/lib/api/clinic";
+import { qk, useApiMutation, useClinicBundle, useCurrentUser, useEffectiveRole } from "@/lib/api/session";
 import { can } from "@/lib/permissions";
-import { currency, uid } from "@/lib/utils";
+import { currency } from "@/lib/utils";
 import { ListState } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,34 +39,25 @@ export function assignableRoles(actor: Role | undefined): ClinicRole[] {
 
 function InviteDialog({ clinic, open, onOpenChange }: { clinic: Clinic; open: boolean; onOpenChange: (o: boolean) => void }) {
   const role = useEffectiveRole();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const invite = useApiMutation((v: InviteValues) => api<{ userId: string; invited: boolean }>(clinicPath(clinic.id, "/users"), { body: v }), {
+    invalidate: [qk.clinicRes(clinic.id, "users")],
+    success: (r, v) => (r.invited ? `Invite sent to ${v.email}` : `${v.email} already has a login; added to ${clinic.name}`),
+    onSuccess: () => {
+      form.reset();
+      onOpenChange(false);
+    },
+  });
   const form = useForm<InviteValues>({ resolver: zodResolver(inviteSchema), defaultValues: { name: "", email: "", role: "front_desk" } });
   const e = form.formState.errors;
 
-  const onSubmit = (v: InviteValues) => {
-    let existed = false;
-    mutate((db) => {
-      const u = db.users.find((x) => x.email.toLowerCase() === v.email.toLowerCase());
-      if (u) {
-        existed = true;
-        if (!u.clinicIds.includes(clinic.id)) u.clinicIds.push(clinic.id);
-        return;
-      }
-      db.users.push({ id: uid("u"), name: v.name, email: v.email, role: v.role, clinicIds: [clinic.id], twoFactor: false, active: true, invitedAt: new Date().toISOString() });
-    });
-    logAudit({ action: existed ? "Added existing user to clinic" : `Invited ${ROLE_LABELS[v.role]}`, category: "user", target: v.email, clinicId: clinic.id });
-    toast.success(existed ? `${v.email} already has a login; added to ${clinic.name}` : `Invite sent to ${v.email} (simulated)`);
-    form.reset();
-    onOpenChange(false);
-  };
+  const onSubmit = (v: InviteValues) => invite.mutate(v);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Invite staff</DialogTitle>
-          <DialogDescription>They get an email to set a password and turn on 2FA (simulated).</DialogDescription>
+          <DialogDescription>They get an email with a link (valid 7 days) to set a password. Existing users are added to this clinic.</DialogDescription>
         </DialogHeader>
         <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="grid gap-4">
           <div className="grid gap-1.5">
@@ -92,7 +84,7 @@ function InviteDialog({ clinic, open, onOpenChange }: { clinic: Clinic; open: bo
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit">Send invite</Button>
+            <Button type="submit" disabled={invite.isPending}>Send invite</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -101,24 +93,20 @@ function InviteDialog({ clinic, open, onOpenChange }: { clinic: Clinic; open: bo
 }
 
 export function UsersSettings({ clinic }: { clinic: Clinic }) {
-  const users = useApp((s) => s.db.users);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const usersQ = useClinicUsers();
+  const users = useMemo(() => usersQ.data ?? [], [usersQ.data]);
   const me = useCurrentUser();
   const role = useEffectiveRole();
   const [inviteOpen, setInviteOpen] = useState(false);
-  const list = useMemo(() => users.filter((u) => u.clinicIds.includes(clinic.id)).sort((a, b) => CLINIC_ROLES.indexOf(a.role as ClinicRole) - CLINIC_ROLES.indexOf(b.role as ClinicRole)), [users, clinic.id]);
+  const list = useMemo(() => [...users].sort((a, b) => CLINIC_ROLES.indexOf(a.role as ClinicRole) - CLINIC_ROLES.indexOf(b.role as ClinicRole)), [users]);
   const canTouchOwner = can(role, "users:remove_owner");
   const roles = assignableRoles(role);
-
-  const update = (id: string, action: string, fn: (u: (typeof users)[number]) => void) => {
-    const target = users.find((u) => u.id === id);
-    mutate((db) => {
-      const u = db.users.find((x) => x.id === id);
-      if (u) fn(u);
-    });
-    logAudit({ action, category: "user", target: target?.email ?? id, clinicId: clinic.id });
-    toast.success(action);
+  const invalidate = [qk.clinicRes(clinic.id, "users")];
+  const patch = useApiMutation(({ id, body }: { id: string; body: { role?: Role; active?: boolean }; action: string }) => api(clinicPath(clinic.id, `/users/${id}`), { method: "PATCH", body }), { invalidate, success: (_r, v) => v.action });
+  const remove = useApiMutation(({ id }: { id: string; action: string }) => api(clinicPath(clinic.id, `/users/${id}`), { method: "DELETE" }), { invalidate, success: (_r, v) => v.action });
+  const update = (u: ClinicUser, action: string, body: { role?: Role; active?: boolean } | "remove") => {
+    if (body === "remove") remove.mutate({ id: u.id, action });
+    else patch.mutate({ id: u.id, body, action });
   };
 
   return (
@@ -128,7 +116,7 @@ export function UsersSettings({ clinic }: { clinic: Clinic }) {
           <UserPlus /> Invite staff
         </Button>
       </div>
-      <ListState items={list} emptyTitle="No staff yet" emptyDescription="Invite your team to share the work.">
+      <ListState items={list} loading={usersQ.isLoading} emptyTitle="No staff yet" emptyDescription="Invite your team to share the work.">
         {(rows) => (
           <Table>
             <TableHeader>
@@ -158,7 +146,7 @@ export function UsersSettings({ clinic }: { clinic: Clinic }) {
                           aria-label={`Role for ${u.name}`}
                           className="h-8 rounded-md border border-input bg-card px-2 text-sm"
                           value={u.role}
-                          onChange={(e) => update(u.id, `Changed role to ${ROLE_LABELS[e.target.value as Role]}`, (x) => void (x.role = e.target.value as Role))}
+                          onChange={(e) => update(u, `Changed role to ${ROLE_LABELS[e.target.value as Role]}`, { role: e.target.value as Role })}
                         >
                           {(roles.includes(u.role as ClinicRole) ? roles : [u.role as ClinicRole, ...roles]).map((r) => (
                             <option key={r} value={r}>
@@ -178,14 +166,14 @@ export function UsersSettings({ clinic }: { clinic: Clinic }) {
                         <span className="text-xs text-muted-foreground">{u.id === me?.id ? "You" : "Owner"}</span>
                       ) : (
                         <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="xs" onClick={() => update(u.id, u.active ? `Deactivated ${u.name}` : `Reactivated ${u.name}`, (x) => void (x.active = !x.active))}>
+                          <Button variant="ghost" size="xs" onClick={() => update(u, u.active ? `Deactivated ${u.name}` : `Reactivated ${u.name}`, { active: !u.active })}>
                             {u.active ? "Deactivate" : "Reactivate"}
                           </Button>
                           <Button
                             variant="ghost"
                             size="xs"
                             className="text-destructive"
-                            onClick={() => update(u.id, `Removed ${u.name} from ${clinic.name}`, (x) => void (x.clinicIds = x.clinicIds.filter((c) => c !== clinic.id)))}
+                            onClick={() => update(u, `Removed ${u.name} from ${clinic.name}`, "remove")}
                           >
                             Remove
                           </Button>
@@ -204,13 +192,8 @@ export function UsersSettings({ clinic }: { clinic: Clinic }) {
   );
 }
 
-const INVOICE_BADGE = { paid: "success", open: "info", overdue: "danger", void: "muted" } as const;
-
 export function BillingView({ clinic }: { clinic: Clinic }) {
-  const plans = useApp((s) => s.db.plans);
-  const invoices = useApp((s) => s.db.invoices);
-  const plan = plans.find((p) => p.id === clinic.planId);
-  const list = useMemo(() => invoices.filter((i) => i.clinicId === clinic.id).sort((a, b) => b.issuedAt.localeCompare(a.issuedAt)), [invoices, clinic.id]);
+  const plan = useClinicBundle().data?.plan;
   return (
     <div className="grid gap-6">
       <SettingsCard title="Plan" description="Billing is handled by the Kivi team. Card payments through Stripe come in a later phase; invoices are manual until then.">
@@ -240,37 +223,8 @@ export function BillingView({ clinic }: { clinic: Clinic }) {
           <p className="text-sm text-muted-foreground">No plan assigned.</p>
         )}
       </SettingsCard>
-      <SettingsCard title="Invoices">
-        <ListState items={list} emptyTitle="No invoices yet" emptyDescription={clinic.status === "trial" ? "Your first invoice is issued when the trial ends." : undefined}>
-          {(rows) => (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Invoice</TableHead>
-                  <TableHead>Issued</TableHead>
-                  <TableHead>Due</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((i) => (
-                  <TableRow key={i.id}>
-                    <TableCell className="font-mono text-xs">{i.number}</TableCell>
-                    <TableCell>{format(new Date(i.issuedAt), "MMM d, yyyy")}</TableCell>
-                    <TableCell>{format(new Date(i.dueAt), "MMM d, yyyy")}</TableCell>
-                    <TableCell className="text-right tabular-nums">{currency(i.amount)}</TableCell>
-                    <TableCell>
-                      <Badge variant={INVOICE_BADGE[i.status]} className="capitalize">
-                        {i.status}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </ListState>
+      <SettingsCard title="Invoices" description="Invoices are issued by the Kivi team and sent to the clinic's alert email. Contact support for copies.">
+        <p className="text-sm text-muted-foreground">{clinic.status === "trial" ? "Your first invoice is issued when the trial ends." : "Invoice history is available from the Kivi team in this phase."}</p>
       </SettingsCard>
     </div>
   );

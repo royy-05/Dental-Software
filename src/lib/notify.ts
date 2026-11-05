@@ -20,7 +20,7 @@ import { fromWall, nowInZone, toWall } from "./time";
 
 export const BOOKING_BASE_URL = "https://book.kivihealth.example.com";
 
-export type NotifyEvent = "booked" | "cancelled" | "rescheduled" | "declined" | "confirmation_request" | "resend";
+export type NotifyEvent = "booked" | "cancelled" | "rescheduled" | "declined" | "confirmation_request" | "resend" | "reminders";
 
 export interface NotifyContext {
   clinic: Clinic;
@@ -93,7 +93,7 @@ function findTemplate(templates: MessageTemplate[], event: TemplateEvent, channe
   return templates.find((t) => t.event === event && t.channel === channel);
 }
 
-interface Draft {
+export interface Draft {
   channel: Channel;
   recipientType: "patient" | "clinic";
   to: string;
@@ -103,8 +103,38 @@ interface Draft {
   scheduledFor?: Date; // clinic wall-clock
 }
 
-export function finalizeMessages(drafts: Draft[], ctx: NotifyContext): MessageLog[] {
+/**
+ * Decide what happens to each draft: blocked by an opt-out, deferred (reminder time or quiet hours) or sent now.
+ * Shared by the browser simulator and the server queue so both apply the same rules.
+ */
+export type Disposition =
+  | { kind: "blocked"; error: string }
+  | { kind: "deferred"; scheduledFor: Date; note?: string }
+  | { kind: "send" };
+
+export function dispositionFor(d: Draft, ctx: Pick<NotifyContext, "clinic" | "optOuts" | "now" | "quietHours">): Disposition {
   const localNow = nowInZone(ctx.clinic.timeZone, ctx.now);
+  if (d.channel === "sms" && d.recipientType === "patient" && ctx.optOuts.some((o) => o.clinicId === ctx.clinic.id && o.phone === d.to && o.kind === "sms_stop")) {
+    return { kind: "blocked", error: "Recipient opted out (STOP)" };
+  }
+  if (d.channel === "email" && d.recipientType === "patient" && ctx.optOuts.some((o) => o.clinicId === ctx.clinic.id && o.phone === d.to && (o.kind === "email_bounce" || o.kind === "email_unsubscribe"))) {
+    return { kind: "blocked", error: "Address bounced or unsubscribed" };
+  }
+  if (d.scheduledFor && d.scheduledFor > localNow) {
+    if (d.channel === "sms" && d.recipientType === "patient") {
+      const next = quietHoursDeferral(d.scheduledFor, ctx.quietHours);
+      if (next) return { kind: "deferred", scheduledFor: next, note: "Deferred: quiet hours (9 pm - 8 am)" };
+    }
+    return { kind: "deferred", scheduledFor: d.scheduledFor };
+  }
+  if (d.channel === "sms" && d.recipientType === "patient") {
+    const next = quietHoursDeferral(localNow, ctx.quietHours);
+    if (next) return { kind: "deferred", scheduledFor: next, note: "Deferred: quiet hours (9 pm - 8 am)" };
+  }
+  return { kind: "send" };
+}
+
+export function finalizeMessages(drafts: Draft[], ctx: NotifyContext): MessageLog[] {
   return drafts.map((d) => {
     const id = msgId();
     const base: MessageLog = {
@@ -121,22 +151,16 @@ export function finalizeMessages(drafts: Draft[], ctx: NotifyContext): MessageLo
       status: "sent",
       createdAt: ctx.now.toISOString(),
     };
-    if (d.channel === "sms" && d.recipientType === "patient" && ctx.optOuts.some((o) => o.clinicId === ctx.clinic.id && o.phone === d.to && o.kind === "sms_stop")) {
-      return { ...base, status: "failed", error: "Recipient opted out (STOP)" };
-    }
-    if (d.scheduledFor && d.scheduledFor > localNow) {
-      return { ...base, status: "scheduled", scheduledFor: toWall(d.scheduledFor) };
-    }
-    if (d.channel === "sms" && d.recipientType === "patient") {
-      const next = quietHoursDeferral(localNow, ctx.quietHours);
-      if (next) return { ...base, status: "scheduled", scheduledFor: toWall(next), error: "Deferred: quiet hours (9 pm - 8 am)" };
-    }
+    const disp = dispositionFor(d, ctx);
+    if (disp.kind === "blocked") return { ...base, status: "failed", error: disp.error };
+    if (disp.kind === "deferred") return { ...base, status: "scheduled", scheduledFor: toWall(disp.scheduledFor), error: disp.note };
     const outcome = simulateDelivery(id, d.channel, d.to);
     return { ...base, ...outcome };
   });
 }
 
-export function buildMessages(event: NotifyEvent, ctx: NotifyContext): MessageLog[] {
+/** The messages an event produces, before delivery rules. Pure; used by the server queue and the simulator. */
+export function draftMessages(event: NotifyEvent, ctx: Omit<NotifyContext, "optOuts" | "quietHours">): Draft[] {
   const { clinic, appointment: appt, reason, provider, templates } = ctx;
   const vars = templateVars(clinic, appt, reason, provider, ctx.baseUrl);
   const smsVars = clinic.settings.notifications.leaveReasonOutOfSms ? { ...vars, rfv_name: "appointment" } : vars;
@@ -200,6 +224,15 @@ export function buildMessages(event: NotifyEvent, ctx: NotifyContext): MessageLo
     case "confirmation_request":
       toPatient("confirmation_request");
       break;
+    case "reminders": {
+      // Re-issued after a reschedule: only the two reminders, at the new times.
+      if (n.remindersEnabled) {
+        const start = fromWall(appt.start);
+        toPatient("reminder_24h", new Date(start.getTime() - n.reminderFirstHours * 3600000));
+        toPatient("reminder_2h", new Date(start.getTime() - n.reminderSecondHours * 3600000));
+      }
+      break;
+    }
     case "cancelled":
       toPatient("cancelled");
       toClinic("cancel");
@@ -214,8 +247,11 @@ export function buildMessages(event: NotifyEvent, ctx: NotifyContext): MessageLo
   }
   // Drop reminders that would be in the past.
   const localNow = nowInZone(clinic.timeZone, ctx.now);
-  const filtered = drafts.filter((d) => !(d.event === "reminder_24h" || d.event === "reminder_2h") || (d.scheduledFor && d.scheduledFor > localNow));
-  return finalizeMessages(filtered, ctx);
+  return drafts.filter((d) => !(d.event === "reminder_24h" || d.event === "reminder_2h") || (d.scheduledFor && d.scheduledFor > localNow));
+}
+
+export function buildMessages(event: NotifyEvent, ctx: NotifyContext): MessageLog[] {
+  return finalizeMessages(draftMessages(event, ctx), ctx);
 }
 
 export type SmsIntent = "confirm" | "stop" | "help" | "start" | "unknown";

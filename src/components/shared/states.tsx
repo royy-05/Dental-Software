@@ -44,13 +44,13 @@ export function EmptyState({
   );
 }
 
-export function ErrorState({ message = "Something went wrong loading this data.", onRetry, className }: { message?: string; onRetry?: () => void; className?: string }) {
+export function ErrorState({ title = "Couldn't load data", message = "Something went wrong loading this data.", onRetry, className }: { title?: string; message?: string; onRetry?: () => void; className?: string }) {
   return (
     <div role="alert" className={cn("flex flex-col items-center justify-center gap-2 px-6 py-12 text-center", className)}>
       <div className="rounded-full bg-red-100 p-3">
         <AlertTriangle className="h-6 w-6 text-destructive" aria-hidden />
       </div>
-      <p className="font-medium">Couldn&apos;t load data</p>
+      <p className="font-medium">{title}</p>
       <p className="max-w-sm text-sm text-muted-foreground">{message}</p>
       {onRetry && (
         <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>

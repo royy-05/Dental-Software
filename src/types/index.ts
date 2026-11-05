@@ -165,6 +165,7 @@ export interface Clinic {
   lastLoginAt?: string;
   trialEndsAt?: string;
   deletedAt?: string; // soft delete, restorable for 30 days
+  retentionDays?: number; // patient data retention (7); undefined = keep
 }
 
 export interface ClinicGroup {
@@ -451,6 +452,7 @@ export interface InternalNote {
 export interface Appointment {
   id: string;
   clinicId: string;
+  patientId?: string; // set by the server (patients table)
   createdAt: string; // "date scheduled" (UTC ISO)
   start: string; // clinic wall-clock ISO
   end: string;
@@ -476,6 +478,8 @@ export interface Appointment {
   smsConsent: { given: boolean; at?: string; termsVersion?: string; ip?: string };
   bookedBy: "patient" | "staff";
   token: string; // reschedule / cancel link token
+  /** Bumped by the server on reschedule and cancel; older signed links and reminders become stale. */
+  version?: number;
 }
 
 export interface SlotHold {
@@ -565,7 +569,7 @@ export interface MessageTemplate {
   enabled: boolean;
 }
 
-export type DeliveryStatus = "queued" | "scheduled" | "sent" | "delivered" | "failed" | "opened" | "bounced";
+export type DeliveryStatus = "queued" | "scheduled" | "sent" | "delivered" | "failed" | "opened" | "bounced" | "skipped";
 export interface MessageLog {
   id: string;
   clinicId: string;

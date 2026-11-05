@@ -1,14 +1,15 @@
 "use client";
 
-import { use, useCallback, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import { CalendarClock, CalendarX2, CheckCircle2, Phone } from "lucide-react";
 import { toast } from "sonner";
-import { useApp } from "@/store/app";
-import { availableDays, firstAvailable, getSlotsForDay, type Slot } from "@/lib/slots";
-import { fromWall, nowInZone, tzAbbrev } from "@/lib/time";
-import { useHydrated } from "@/components/shared/hydration";
+import { ApiClientError } from "@/lib/api/client";
+import { publicApi, useManageView } from "@/lib/api/public";
+import type { Slot } from "@/lib/slots";
+import { dayKey, fromWall, nowInZone, toWall, tzAbbrev } from "@/lib/time";
 import { LoadingState } from "@/components/shared/states";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -16,74 +17,137 @@ import { Textarea } from "@/components/ui/textarea";
 import { BrandButton, WidgetUiProvider } from "@/components/widget/brand";
 import { WidgetFooter, WidgetHeader } from "@/components/widget/chrome";
 import { DateTimePicker } from "@/components/widget/date-time-picker";
-import { useClinicBySlug } from "@/components/widget/use-clinic-by-slug";
+
+type Cache<T> = Map<string, T | "loading">;
+
+/** Availability for the reschedule picker, loaded from the signed-link endpoints and cached per month / day. */
+function useManageAvailability(token: string) {
+  const [, rerender] = useReducer((x: number) => x + 1, 0);
+  const avail = useRef<Cache<Record<string, number>>>(new Map());
+  const slots = useRef<Cache<Slot[]>>(new Map());
+  const pending = useRef(0);
+  useEffect(() => {
+    // A new link (after a reschedule) means new availability.
+    avail.current = new Map();
+    slots.current = new Map();
+  }, [token]);
+  const availability = useCallback(
+    (from: Date, days: number) => {
+      const key = `${dayKey(from)}|${days}`;
+      const hit = avail.current.get(key);
+      if (hit === undefined) {
+        avail.current.set(key, "loading");
+        pending.current++;
+        publicApi
+          .manageAvailability(token, { from: dayKey(from), days })
+          .then((m) => avail.current.set(key, m))
+          .catch(() => avail.current.set(key, {}))
+          .finally(() => {
+            pending.current--;
+            rerender();
+          });
+      }
+      return hit && hit !== "loading" ? hit : {};
+    },
+    [token],
+  );
+  const slotsFor = useCallback(
+    (day: Date) => {
+      const key = dayKey(day);
+      const hit = slots.current.get(key);
+      if (hit === undefined) {
+        slots.current.set(key, "loading");
+        pending.current++;
+        publicApi
+          .manageSlots(token, { date: key })
+          .then((list) => slots.current.set(key, list))
+          .catch(() => slots.current.set(key, []))
+          .finally(() => {
+            pending.current--;
+            rerender();
+          });
+      }
+      return hit && hit !== "loading" ? hit : [];
+    },
+    [token],
+  );
+  return { availability, slotsFor, loading: pending.current > 0 };
+}
 
 export default function ManagePage({ params }: { params: Promise<{ clinicSlug: string; token: string }> }) {
   const { clinicSlug, token } = use(params);
-  const hydrated = useHydrated();
-  const clinic = useClinicBySlug(clinicSlug);
-  const appt = useApp((s) => s.db.appointments.find((a) => a.token === token));
-  const reason = useApp((s) => s.db.reasons.find((r) => r.id === appt?.reasonId));
-  const provider = useApp((s) => s.db.providers.find((p) => p.id === appt?.providerId));
-  const flow = useApp((s) => s.db.flows.find((f) => f.clinicId === clinic?.id));
-  const appointments = useApp((s) => s.db.appointments);
-  const holds = useApp((s) => s.db.holds);
-  const platform = useApp((s) => s.db.platform);
-  const reschedule = useApp((s) => s.rescheduleAppointment);
-  const setStatus = useApp((s) => s.setAppointmentStatus);
+  const router = useRouter();
+  const view = useManageView(token);
+  const clinic = view.data?.clinic;
+  const appt = view.data?.appointment;
+  const reason = view.data?.reason;
+  const provider = view.data?.provider;
+  const rules = view.data?.rules;
+  const { availability, slotsFor, loading } = useManageAvailability(token);
   const [mode, setMode] = useState<"view" | "reschedule">("view");
   const [picked, setPicked] = useState<Slot | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelNote, setCancelNote] = useState("");
+  const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<"rescheduled" | "cancelled" | null>(null);
-
-  const ctx = useCallback(() => {
-    if (!clinic || !appt || !flow) return null;
-    return useApp.getState().slotContext(clinic.id, appt.reasonId, { rules: flow.published.rules, ignoreAppointmentId: appt.id });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clinic, appt, flow, appointments, holds]);
-  const slotsFor = useCallback((day: Date) => {
-    const c = ctx();
-    return c ? firstAvailable(getSlotsForDay(day, c)) : [];
-  }, [ctx]);
-  const availability = useCallback((from: Date, days: number) => {
-    const c = ctx();
-    return c ? availableDays(from, days, c) : {};
-  }, [ctx]);
   const now = useMemo(() => (clinic ? nowInZone(clinic.timeZone) : new Date()), [clinic]);
+  useEffect(() => {
+    setMode("view");
+    setPicked(null);
+  }, [token]);
+  useEffect(() => {
+    if (view.data && done === null && view.data.appointment.statusHistory.at(-1)?.by === "Patient (reschedule link)" && sessionStorage.getItem("kivi-rescheduled") === token) {
+      setDone("rescheduled");
+      sessionStorage.removeItem("kivi-rescheduled");
+    }
+  }, [view.data, done, token]);
 
-  if (!hydrated) return <LoadingState className="mx-auto max-w-xl pt-16" />;
-  if (!clinic || !appt || !flow)
+  if (view.isLoading) return <LoadingState className="mx-auto max-w-xl pt-16" />;
+  if (!clinic || !appt || !rules)
     return (
       <main id="main" className="mx-auto max-w-md px-4 py-20 text-center">
         <h1 className="text-xl font-semibold">Appointment not found</h1>
-        <p className="mt-2 text-sm text-muted-foreground">This link may have expired. Please contact the clinic.</p>
+        <p className="mt-2 text-sm text-muted-foreground">{view.error instanceof Error ? view.error.message : "This link may have expired. Please contact the clinic."}</p>
       </main>
     );
 
   const start = fromWall(appt.start);
   const hoursUntil = (start.getTime() - now.getTime()) / 3600000;
-  const windowH = flow.published.rules.cancellationWindowHours;
+  const windowH = rules.cancellationWindowHours;
   const active = appt.status === "unconfirmed" || appt.status === "confirmed";
   const inWindow = hoursUntil >= windowH;
   const color = clinic.branding.primaryColor;
 
-  const confirmReschedule = () => {
-    if (!picked) return;
-    const res = reschedule(appt.id, { start: picked.start, providerId: picked.providerId, operatoryId: picked.operatoryId }, "Patient (reschedule link)");
-    if (!res.ok) {
-      toast.error(res.error ?? "Couldn't reschedule");
-      setPicked(null);
-      return;
-    }
-    setDone("rescheduled");
-    setMode("view");
-    setPicked(null);
+  const fail = (e: unknown) => {
+    toast.error(e instanceof ApiClientError ? e.message : "Something went wrong. Please try again.");
+    if (e instanceof ApiClientError && (e.code === "link_stale" || e.code === "link_invalid" || e.code === "not_active" || e.code === "outside_window")) view.refetch();
   };
-  const confirmCancel = () => {
-    setStatus(appt.id, "cancelled", { by: "Patient (cancel link)", note: cancelNote.trim() || undefined });
-    setCancelOpen(false);
-    setDone("cancelled");
+  const confirmReschedule = async () => {
+    if (!picked) return;
+    setBusy(true);
+    try {
+      const res = await publicApi.reschedule(token, { start: toWall(picked.start), providerId: picked.providerId });
+      sessionStorage.setItem("kivi-rescheduled", res.token);
+      router.replace(`/book/${clinicSlug}/manage/${res.token}`);
+    } catch (e) {
+      fail(e);
+      setPicked(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmCancel = async () => {
+    setBusy(true);
+    try {
+      await publicApi.cancel(token, { note: cancelNote.trim() || undefined });
+      setCancelOpen(false);
+      setDone("cancelled");
+      await view.refetch();
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -127,15 +191,16 @@ export default function ManagePage({ params }: { params: Promise<{ clinicSlug: s
                 <DateTimePicker
                   timeZone={clinic.timeZone}
                   now={now}
-                  maxDays={flow.published.rules.bookingWindowDays}
+                  maxDays={rules.bookingWindowDays}
                   availability={availability}
                   slotsFor={slotsFor}
                   selectedStart={picked?.start}
                   onSelect={setPicked}
+                  loading={loading}
                 />
                 <div className="mt-5 flex flex-wrap items-center gap-2">
-                  <BrandButton disabled={!picked} onClick={confirmReschedule}>
-                    {picked ? `Move to ${format(picked.start, "EEE MMM d, h:mm a")}` : "Choose a time"}
+                  <BrandButton disabled={!picked || busy} onClick={confirmReschedule}>
+                    {busy ? "Moving…" : picked ? `Move to ${format(picked.start, "EEE MMM d, h:mm a")}` : "Choose a time"}
                   </BrandButton>
                   <BrandButton variant="ghost" onClick={() => { setMode("view"); setPicked(null); }}>Keep current time</BrandButton>
                 </div>
@@ -143,7 +208,7 @@ export default function ManagePage({ params }: { params: Promise<{ clinicSlug: s
             )}
           </div>
         </main>
-        <WidgetFooter clinic={clinic} poweredBy={platform.branding.poweredByText} />
+        <WidgetFooter clinic={clinic} poweredBy={view.data!.platform.poweredByText} />
       </div>
       <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <DialogContent>
@@ -155,7 +220,7 @@ export default function ManagePage({ params }: { params: Promise<{ clinicSlug: s
           <Textarea id="cancel-note" value={cancelNote} onChange={(e) => setCancelNote(e.target.value)} rows={3} />
           <DialogFooter>
             <BrandButton variant="secondary" onClick={() => setCancelOpen(false)}>Keep appointment</BrandButton>
-            <BrandButton onClick={confirmCancel}>Yes, cancel</BrandButton>
+            <BrandButton disabled={busy} onClick={confirmCancel}>{busy ? "Cancelling…" : "Yes, cancel"}</BrandButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

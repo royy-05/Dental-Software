@@ -5,10 +5,11 @@ import { format } from "date-fns";
 import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Download, RotateCcw, Search } from "lucide-react";
 import type { Appointment, AppointmentStatus, Source } from "@/types";
 import { SOURCE_LABELS, STATUS_LABELS } from "@/types";
-import { useApp } from "@/store/app";
-import { downloadCsv } from "@/lib/utils";
+import { toast } from "sonner";
+import { useUi } from "@/store/ui";
+import { useClinicId } from "@/lib/api/session";
 import { fromWall } from "@/lib/time";
-import { Phi, usePhiText } from "@/components/shared/phi";
+import { Phi } from "@/components/shared/phi";
 import { useCan } from "@/components/shared/guards";
 import { ListState } from "@/components/shared/states";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -45,8 +46,9 @@ export function AppointmentsTable({ data, tab, onOpen, loading }: { data: Clinic
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
   const can = useCan();
-  const phi = usePhiText();
-  const logAudit = useApp((s) => s.logAudit);
+  const clinicId = useClinicId();
+  const hidePhi = useUi((s) => s.hidePhi);
+  const [exporting, setExporting] = useState(false);
 
   const rows = useMemo(
     () => sortAppointments(filterAppointments(data.appointments, filters, tab), sort.key, sort.dir, { provider: data.providerName, reason: data.reasonName }),
@@ -60,28 +62,34 @@ export function AppointmentsTable({ data, tab, onOpen, loading }: { data: Clinic
   };
   const active = JSON.stringify(filters) !== JSON.stringify(EMPTY_FILTERS);
 
-  const exportCsv = () => {
-    downloadCsv(
-      `appointments-${tab}-${format(new Date(), "yyyy-MM-dd")}.csv`,
-      rows.map((a) => ({
-        date_scheduled: a.createdAt,
-        patient_type: a.patientType,
-        provider: data.providerName(a.providerId),
-        patient: phi(`${a.patient.firstName} ${a.patient.lastName}`),
-        phone: phi(a.patient.phone),
-        email: phi(a.patient.email),
-        reason: data.reasonName(a.reasonId),
-        source: SOURCE_LABELS[a.source],
-        referrer_id: a.referrerId ?? "",
-        utm_source: a.utm.source ?? "",
-        utm_medium: a.utm.medium ?? "",
-        utm_campaign: a.utm.campaign ?? "",
-        appointment_start: a.start,
-        status: STATUS_LABELS[a.status],
-        decline_reason: a.declineReason ?? "",
-      })),
-    );
-    logAudit({ action: `Exported ${rows.length} appointments (CSV)`, category: "export", target: tab === "declined" ? "Declined appointments" : "Appointments", clinicId: data.clinicId });
+  /** The server builds the CSV with the same filters and writes the export audit entry (section 8). */
+  const exportCsv = async () => {
+    const q = new URLSearchParams({ tab, hidePhi: hidePhi ? "1" : "0" });
+    if (filters.q) q.set("q", filters.q);
+    if (filters.status !== "all") q.set("status", filters.status);
+    if (filters.providerId !== "all") q.set("providerId", filters.providerId);
+    if (filters.reasonId !== "all") q.set("reasonId", filters.reasonId);
+    if (filters.source !== "all") q.set("source", filters.source);
+    if (filters.patientType !== "all") q.set("patientType", filters.patientType);
+    if (filters.from) q.set("from", filters.from);
+    if (filters.to) q.set("to", filters.to);
+    setExporting(true);
+    try {
+      const res = await fetch(`/api/clinics/${clinicId}/appointments/export?${q}`, { credentials: "same-origin" });
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `appointments-${tab}-${format(new Date(), "yyyy-MM-dd")}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${rows.length} appointments`);
+    } catch {
+      toast.error("Couldn't export the CSV. Try again.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const cell = (a: Appointment, key: ColumnKey) => {
@@ -163,8 +171,8 @@ export function AppointmentsTable({ data, tab, onOpen, loading }: { data: Clinic
             </PopoverContent>
           </Popover>
           {can("appointments:export") && (
-            <Button variant="outline" size="sm" onClick={exportCsv} disabled={!rows.length}>
-              <Download /> CSV
+            <Button variant="outline" size="sm" onClick={exportCsv} disabled={!rows.length || exporting}>
+              <Download /> {exporting ? "Exporting…" : "CSV"}
             </Button>
           )}
         </div>

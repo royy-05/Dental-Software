@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "build/**"]
+  pull_request:
+
+env:
+  TZ: UTC
+  NODE_ENV: test
+  DATABASE_URL: postgresql://kivi_app:kivi_app_local_only@localhost:5432/kivi
+  DIRECT_DATABASE_URL: postgresql://kivi:kivi_local_only@localhost:5432/kivi
+  TEST_DATABASE_URL: postgresql://kivi_app:kivi_app_local_only@localhost:5432/kivi_test
+  TEST_DIRECT_DATABASE_URL: postgresql://kivi:kivi_local_only@localhost:5432/kivi_test
+  AUTH_SECRET: ci-only-auth-secret-0123456789abcdef0123456789
+  AUTH_TRUST_HOST: "true"
+  APP_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+  LINK_SIGNING_SECRET: ci-only-link-secret-0123456789abcdef
+  APP_BASE_URL: http://localhost:3000
+  EMAIL_DRIVER: memory
+  SMS_DRIVER: mock
+  SMS_WEBHOOK_SECRET: ci-only-webhook-secret
+  DEMO_MODE: "true"
+
+jobs:
+  check:
+    name: Lint, typecheck, unit and integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kivi
+          POSTGRES_PASSWORD: kivi_local_only
+          POSTGRES_DB: kivi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kivi -d kivi"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Create runtime role and test database
+        run: |
+          psql "postgresql://kivi:kivi_local_only@localhost:5432/kivi" -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE kivi_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'kivi_app_local_only';" \
+            -c "CREATE DATABASE kivi_test OWNER kivi;"
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  e2e:
+    name: Build and Playwright end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: production
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kivi
+          POSTGRES_PASSWORD: kivi_local_only
+          POSTGRES_DB: kivi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kivi -d kivi"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Create runtime role
+        run: |
+          psql "postgresql://kivi:kivi_local_only@localhost:5432/kivi" -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE kivi_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'kivi_app_local_only';"
+      - run: npm ci
+        env:
+          NODE_ENV: development
+      - run: npm run db:setup
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7

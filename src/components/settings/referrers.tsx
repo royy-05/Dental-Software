@@ -2,10 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { Copy, Pencil, Plus, Trash2 } from "lucide-react";
-import { toast } from "sonner";
 import type { Clinic, Referrer, ReferrerSourceType } from "@/types";
 import { SOURCE_LABELS } from "@/types";
-import { useApp } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { clinicPath } from "@/lib/api/clinic";
+import { useApiMutation } from "@/lib/api/session";
+import { useClinicConfig } from "@/components/config/common";
 import { ListState } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,14 +25,11 @@ export function trackedLink(origin: string, clinic: Clinic, id: string) {
   return `${origin}/book/${clinic.slug}?referrer_id=${id}`;
 }
 
-export function nextReferrerId(list: Referrer[]): string {
-  return String(list.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0) + 1);
-}
-
 function ReferrerDialog({ clinic, initial, open, onOpenChange }: { clinic: Clinic; initial?: Referrer; open: boolean; onOpenChange: (o: boolean) => void }) {
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
-  const all = useApp((s) => s.db.referrers);
+  const save = useApiMutation(
+    (body: { name: string; sourceType: ReferrerSourceType; redirectUrl: string }) => api<Referrer>(clinicPath(clinic.id, initial ? `/referrers/${initial.id}` : "/referrers"), { method: initial ? "PATCH" : "POST", body }),
+    { success: (r) => (initial ? "Referrer updated" : `Referrer added with ID ${r.id}`), onSuccess: () => onOpenChange(false) },
+  );
   const [name, setName] = useState(initial?.name ?? "");
   const [type, setType] = useState<ReferrerSourceType>(initial?.sourceType ?? "custom");
   const [url, setUrl] = useState(initial?.redirectUrl ?? "");
@@ -42,15 +41,7 @@ function ReferrerDialog({ clinic, initial, open, onOpenChange }: { clinic: Clini
     e.preventDefault();
     setTouched(true);
     if (nameError || urlError) return;
-    const id = initial?.id ?? nextReferrerId(all.filter((r) => r.clinicId === clinic.id));
-    mutate((db) => {
-      const existing = db.referrers.find((r) => r.clinicId === clinic.id && r.id === id);
-      if (existing) Object.assign(existing, { name: name.trim(), sourceType: type, redirectUrl: url || undefined });
-      else db.referrers.push({ id, clinicId: clinic.id, name: name.trim(), sourceType: type, redirectUrl: url || undefined });
-    });
-    logAudit({ action: initial ? "Edited referrer" : "Added referrer", category: "settings", target: `${name} (ID ${id})`, clinicId: clinic.id });
-    toast.success(initial ? "Referrer updated" : `Referrer added with ID ${id}`);
-    onOpenChange(false);
+    save.mutate({ name: name.trim(), sourceType: type, redirectUrl: url });
   };
 
   return (
@@ -100,11 +91,10 @@ function ReferrerDialog({ clinic, initial, open, onOpenChange }: { clinic: Clini
 }
 
 export function ReferrerSettings({ clinic }: { clinic: Clinic }) {
-  const all = useApp((s) => s.db.referrers);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const { referrers, isLoading } = useClinicConfig();
+  const remove = useApiMutation((id: string) => api(clinicPath(clinic.id, `/referrers/${id}`), { method: "DELETE" }), { success: "Referrer deleted", onSuccess: () => setConfirmDelete(null) });
   const origin = useOrigin();
-  const list = useMemo(() => all.filter((r) => r.clinicId === clinic.id).sort((a, b) => Number(a.id) - Number(b.id)), [all, clinic.id]);
+  const list = useMemo(() => [...referrers].sort((a, b) => Number(a.id) - Number(b.id)), [referrers]);
   const [editing, setEditing] = useState<Referrer | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Referrer | null>(null);
 
@@ -115,7 +105,7 @@ export function ReferrerSettings({ clinic }: { clinic: Clinic }) {
           <Plus /> Add referrer
         </Button>
       </div>
-      <ListState items={list} emptyTitle="No referrers yet" emptyDescription="Add one for each ad campaign or website button you want to track.">
+      <ListState items={list} loading={isLoading} emptyTitle="No referrers yet" emptyDescription="Add one for each ad campaign or website button you want to track.">
         {(rows) => (
           <Table>
             <TableHeader>
@@ -168,13 +158,7 @@ export function ReferrerSettings({ clinic }: { clinic: Clinic }) {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                const r = confirmDelete!;
-                mutate((db) => void (db.referrers = db.referrers.filter((x) => !(x.clinicId === clinic.id && x.id === r.id))));
-                logAudit({ action: "Deleted referrer", category: "settings", target: `${r.name} (ID ${r.id})`, clinicId: clinic.id });
-                toast.success("Referrer deleted");
-                setConfirmDelete(null);
-              }}
+              onClick={() => remove.mutate(confirmDelete!.id)}
             >
               Delete
             </Button>

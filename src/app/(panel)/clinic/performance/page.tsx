@@ -18,9 +18,11 @@ import {
 } from "recharts";
 import type { Source } from "@/types";
 import { SOURCE_LABELS } from "@/types";
-import { useApp } from "@/store/app";
-import { previousRange } from "@/lib/range";
+import { api } from "@/lib/api/client";
+import { clinicPath, useAdSpend, usePerformanceReport, type PerformanceReport } from "@/lib/api/clinic";
+import { qk, useApiMutation } from "@/lib/api/session";
 import { change, currency, downloadCsv } from "@/lib/utils";
+import { useSaveClinic } from "@/components/settings/common";
 import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader, StatCard } from "@/components/shared/page-header";
 import { RangePicker } from "@/components/shared/range-picker";
@@ -31,17 +33,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import {
-  adRoi,
-  avgLeadTimeHours,
-  byProvider,
-  byReason,
-  bySource,
-  fillRate,
-  newPatientCount,
-  overview,
-  patientTrend,
-} from "@/components/reports/aggregate";
 import { Bar, useRange, useReportScope } from "@/components/reports/ui";
 
 const SPEND_SOURCES: Source[] = ["google_ads", "gbp", "rwg", "website", "custom"];
@@ -61,24 +52,27 @@ function Section({ title, description, children, action }: { title: string; desc
   );
 }
 
-function AdSpendEditor() {
-  const { clinic, appts, spend } = useReportScope();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+function AdSpendEditor({ roi }: { roi: PerformanceReport["adRoi"] }) {
+  const { clinic } = useReportScope();
+  const spendQ = useAdSpend();
+  const put = useApiMutation((body: { month: string; source: Source; amount: number }) => api(clinicPath(clinic?.id, "/ad-spend"), { method: "PUT", body }), {
+    invalidate: [qk.clinicRes(clinic?.id, "ad-spend"), qk.clinicRes(clinic?.id, "report-performance")],
+    success: false,
+  });
   const months = useMemo(() => {
     const now = new Date();
     return [0, 1, 2].map((i) => format(subMonths(now, i), "yyyy-MM"));
   }, []);
   const [month, setMonth] = useState(months[0]);
-  const rows = useMemo(() => adRoi(appts, spend).filter((r) => r.month === month), [appts, spend, month]);
+  const [draft, setDraft] = useState<Record<string, number>>({});
+  const rows = useMemo(() => roi.filter((r) => r.month === month), [roi, month]);
   if (!clinic) return null;
 
-  const setAmount = (source: Source, amount: number) => {
-    mutate((db) => {
-      const row = db.adSpend.find((s) => s.clinicId === clinic.id && s.month === month && s.source === source);
-      if (row) row.amount = amount;
-      else db.adSpend.push({ id: `ad_${clinic.id}_${month}_${source}`, clinicId: clinic.id, month, source, amount });
-    });
+  const stored = (source: Source) => spendQ.data?.find((s) => s.month === month && s.source === source)?.amount ?? 0;
+  const amountOf = (source: Source) => draft[`${month}:${source}`] ?? stored(source);
+  const commit = (source: Source) => {
+    const amount = amountOf(source);
+    if (amount !== stored(source)) put.mutate({ month, source, amount });
   };
 
   return (
@@ -92,7 +86,7 @@ function AdSpendEditor() {
             </option>
           ))}
         </select>
-        <span className="text-xs text-muted-foreground">Enter monthly spend per source (clinic or agency). Changes save automatically.</span>
+        <span className="text-xs text-muted-foreground">Enter monthly spend per source (clinic or agency). Saves when you leave the field.</span>
       </div>
       <Table>
         <TableHeader>
@@ -108,9 +102,7 @@ function AdSpendEditor() {
         <TableBody>
           {SPEND_SOURCES.map((source) => {
             const r = rows.find((x) => x.source === source);
-            const list = appts.filter((a) => a.source === source && format(new Date(a.createdAt), "yyyy-MM") === month && a.status !== "declined");
-            const completed = list.filter((a) => a.status === "complete").length;
-            const amount = r?.spend ?? 0;
+            const amount = amountOf(source);
             return (
               <TableRow key={source}>
                 <TableCell>{SOURCE_LABELS[source]}</TableCell>
@@ -122,14 +114,14 @@ function AdSpendEditor() {
                     className="h-8 w-28"
                     aria-label={`${SOURCE_LABELS[source]} spend`}
                     value={amount}
-                    onChange={(e) => setAmount(source, Math.max(0, Number(e.target.value) || 0))}
-                    onBlur={() => logAudit({ action: `Updated ad spend ${month}`, category: "settings", target: SOURCE_LABELS[source], clinicId: clinic.id })}
+                    onChange={(e) => setDraft({ ...draft, [`${month}:${source}`]: Math.max(0, Number(e.target.value) || 0) })}
+                    onBlur={() => commit(source)}
                   />
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{list.length}</TableCell>
-                <TableCell className="text-right tabular-nums">{completed}</TableCell>
-                <TableCell className="text-right tabular-nums">{amount && list.length ? currency(amount / list.length) : "—"}</TableCell>
-                <TableCell className="text-right tabular-nums">{amount && completed ? currency(amount / completed) : "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{r?.bookings ?? "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{r?.completed ?? "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{r?.costPerBooking != null ? currency(r.costPerBooking) : "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{r?.costPerCompleted != null ? currency(r.costPerCompleted) : "—"}</TableCell>
               </TableRow>
             );
           })}
@@ -141,8 +133,7 @@ function AdSpendEditor() {
 
 function MonthlyReport() {
   const { clinic } = useReportScope();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const save = useSaveClinic();
   const [recipients, setRecipients] = useState(clinic?.settings.reports.recipients.join(", ") ?? "");
   if (!clinic) return null;
   const r = clinic.settings.reports;
@@ -152,11 +143,7 @@ function MonthlyReport() {
         <Switch
           id="monthly-report"
           checked={r.monthlyEmail}
-          onCheckedChange={(v) => {
-            mutate((db) => void (db.clinics.find((c) => c.id === clinic.id)!.settings.reports.monthlyEmail = v));
-            logAudit({ action: `${v ? "Enabled" : "Disabled"} monthly report email`, category: "settings", target: "Performance", clinicId: clinic.id });
-            toast.success(v ? "Monthly report scheduled for the 1st of each month" : "Monthly report turned off");
-          }}
+          onCheckedChange={(v) => save(`${v ? "Enabled" : "Disabled"} monthly report email`, (c) => void (c.settings.reports.monthlyEmail = v), { toast: v ? "Monthly report scheduled for the 1st of each month" : "Monthly report turned off" })}
         />
         <Label htmlFor="monthly-report">Email a monthly report</Label>
       </div>
@@ -172,9 +159,7 @@ function MonthlyReport() {
             toast.error("Check the email addresses");
             return;
           }
-          mutate((db) => void (db.clinics.find((c) => c.id === clinic.id)!.settings.reports.recipients = list));
-          logAudit({ action: "Updated monthly report recipients", category: "settings", target: "Performance", clinicId: clinic.id });
-          toast.success("Recipients saved");
+          save("Updated monthly report recipients", (c) => void (c.settings.reports.recipients = list), { toast: "Recipients saved" });
         }}
       >
         Save recipients
@@ -183,23 +168,30 @@ function MonthlyReport() {
   );
 }
 
-function Performance() {
-  const { clinic, appts, sessions, reasons, providers, now } = useReportScope();
-  const { value, setValue, range } = useRange("month");
-  const demo = useDemoState();
-  const prev = useMemo(() => previousRange(range), [range]);
+const EMPTY_OV = { bookings: 0, completed: 0, cancelled: 0, noShows: 0, showRate: 0 };
 
-  const ov = useMemo(() => overview(appts, range), [appts, range]);
-  const ovPrev = useMemo(() => overview(appts, prev), [appts, prev]);
-  const sources = useMemo(() => bySource(appts, sessions, range), [appts, sessions, range]);
-  const trend = useMemo(() => patientTrend(appts, range), [appts, range]);
-  const newNow = useMemo(() => newPatientCount(appts, range), [appts, range]);
-  const newPrev = useMemo(() => newPatientCount(appts, prev), [appts, prev]);
-  const reasonRows = useMemo(() => byReason(appts, reasons, range, now), [appts, reasons, range, now]);
-  const providerRows = useMemo(() => (clinic ? byProvider(appts, providers, clinic, range, now) : []), [appts, providers, clinic, range, now]);
-  const lead = useMemo(() => avgLeadTimeHours(appts, range), [appts, range]);
-  const fill7 = useMemo(() => (clinic ? fillRate(appts, providers, clinic, now, 7) : 0), [appts, providers, clinic, now]);
-  const fill14 = useMemo(() => (clinic ? fillRate(appts, providers, clinic, now, 14) : 0), [appts, providers, clinic, now]);
+function Performance() {
+  const { clinic } = useReportScope();
+  const { value, setValue, range, dayRange } = useRange("month");
+  const demoState = useDemoState();
+  const report = usePerformanceReport(dayRange);
+  const demo = demoState !== "ready" ? demoState : report.isLoading ? "loading" : report.isError ? "error" : "ready";
+
+  const ov = report.data?.overview ?? EMPTY_OV;
+  const ovPrev = report.data?.previous ?? EMPTY_OV;
+  const sources = useMemo(() => report.data?.bySource ?? [], [report.data]);
+  const trend = useMemo(() => report.data?.patientTrend ?? [], [report.data]);
+  const newNow = report.data?.newPatients ?? 0;
+  const newPrev = report.data?.previousNewPatients ?? 0;
+  const reasonRows = useMemo(() => report.data?.byReason ?? [], [report.data]);
+  const providerRows = useMemo(() => report.data?.byProvider ?? [], [report.data]);
+  const roi = useMemo(() => report.data?.adRoi ?? [], [report.data]);
+  const lead = report.data?.avgLeadTimeHours ?? 0;
+  const fill7 = report.data?.fillRate7 ?? 0;
+  const fill14 = report.data?.fillRate14 ?? 0;
+
+  /** Export is audited on the server (export=csv|pdf); the file itself is built here from the report. */
+  const auditExport = (kind: "csv" | "pdf") => api(clinicPath(clinic?.id, `/reports/performance?from=${dayRange.from}&to=${dayRange.to}&export=${kind}`)).catch(() => undefined);
 
   const exportCsv = () => {
     const rows: Record<string, unknown>[] = [];
@@ -225,7 +217,7 @@ function Performance() {
     add("Timing", "next 7 days", "fill_rate_pct", fill7);
     add("Timing", "next 14 days", "fill_rate_pct", fill14);
     downloadCsv(`performance-${clinic?.slug ?? "clinic"}.csv`, rows);
-    useApp.getState().logAudit({ action: "Exported Performance CSV", category: "export", target: "Performance", clinicId: clinic?.id });
+    void auditExport("csv");
   };
 
   return (
@@ -244,7 +236,7 @@ function Performance() {
               variant="outline"
               size="sm"
               onClick={() => {
-                useApp.getState().logAudit({ action: "Exported Performance PDF", category: "export", target: "Performance", clinicId: clinic?.id });
+                void auditExport("pdf");
                 window.print();
               }}
             >
@@ -256,7 +248,7 @@ function Performance() {
       {demo === "loading" ? (
         <LoadingState />
       ) : demo === "error" ? (
-        <ErrorState onRetry={() => window.location.assign(window.location.pathname)} />
+        <ErrorState onRetry={() => (report.isError ? report.refetch() : window.location.assign(window.location.pathname))} />
       ) : (
         <div className="grid gap-6">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
@@ -309,8 +301,8 @@ function Performance() {
             </ListState>
           </Section>
 
-          <Section title="Ad ROI" description="Cost per booking and per completed visit from the spend you enter.">
-            <AdSpendEditor />
+          <Section title="Ad ROI" description="Cost per booking and per completed visit from the spend you enter. Bookings are counted by the month they were made.">
+            <AdSpendEditor roi={roi} />
           </Section>
 
           <Section title="Patients" description={`New patients this period: ${newNow} (${change(newNow, newPrev) >= 0 ? "+" : ""}${change(newNow, newPrev)}% vs previous period).`}>
@@ -402,7 +394,7 @@ function Performance() {
           </Section>
 
           <div data-noprint>
-            <Section title="Scheduled report" description="A PDF summary of this page emailed on the 1st of each month (simulated).">
+            <Section title="Scheduled report" description="A PDF summary of this page emailed on the 1st of each month (setting only in this phase).">
               <MonthlyReport key={clinic?.id} />
             </Section>
           </div>

@@ -3,12 +3,12 @@
 import { useMemo, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { KeyRound, Plus, ShieldCheck, UserX, UserCheck } from "lucide-react";
-import { toast } from "sonner";
 import type { Role, User } from "@/types";
 import { ROLE_LABELS } from "@/types";
 import { isPlatformRole } from "@/lib/permissions";
-import { useApp } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation, useCurrentUser } from "@/lib/api/session";
+import { useAdminClinics, useAdminUsers } from "@/lib/api/admin";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AdminGuard, Field, NativeSelect, useAdminCan } from "@/components/admin-pages/common";
 import { ReadOnlyNotice } from "@/components/admin/shell";
 
+const ADMIN_KEYS = [qk.admin()];
+
 export default function UsersPage() {
   return (
     <AdminGuard perm="admin:users:view">
@@ -29,7 +31,8 @@ export default function UsersPage() {
 }
 
 function Users() {
-  const users = useApp((s) => s.db.users);
+  const usersQ = useAdminUsers();
+  const users = useMemo(() => usersQ.data ?? [], [usersQ.data]);
   const canEdit = useAdminCan()("admin:users:edit");
   const [inviting, setInviting] = useState(false);
   const clinicUsers = useMemo(() => users.filter((u) => !isPlatformRole(u.role)), [users]);
@@ -47,20 +50,23 @@ function Users() {
           <TabsTrigger value="clinic">Clinic users ({clinicUsers.length})</TabsTrigger>
           <TabsTrigger value="team">Super admin team ({teamUsers.length})</TabsTrigger>
         </TabsList>
-        <TabsContent value="clinic"><UserTable users={clinicUsers} showClinics /></TabsContent>
-        <TabsContent value="team"><UserTable users={teamUsers} /></TabsContent>
+        <TabsContent value="clinic"><UserTable users={clinicUsers} loading={usersQ.isLoading} showClinics /></TabsContent>
+        <TabsContent value="team"><UserTable users={teamUsers} loading={usersQ.isLoading} /></TabsContent>
       </Tabs>
       {inviting && <InviteDialog onClose={() => setInviting(false)} />}
     </div>
   );
 }
 
-function UserTable({ users, showClinics = false }: { users: User[]; showClinics?: boolean }) {
-  const clinics = useApp((s) => s.db.clinics);
-  const me = useApp((s) => s.session.userId);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+function UserTable({ users, showClinics = false, loading }: { users: User[]; showClinics?: boolean; loading?: boolean }) {
+  const clinics = useAdminClinics().data ?? [];
+  const me = useCurrentUser()?.id;
   const canEdit = useAdminCan()("admin:users:edit");
+  const patchM = useApiMutation((v: { u: User; patch: Partial<Pick<User, "active" | "forceTwoFactor">>; action: string }) => api(`/api/admin/users/${v.u.id}`, { method: "PATCH", body: v.patch }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, v) => `${v.action}: ${v.u.name}`,
+  });
+  const resetM = useApiMutation((u: User) => api(`/api/admin/users/${u.id}/reset-password`, { method: "POST" }), { invalidate: ADMIN_KEYS, success: (_r, u) => `Password reset email sent to ${u.email}` });
   const [q, setQ] = useState("");
   const [role, setRole] = useState<"all" | Role>("all");
   const rows = useMemo(
@@ -68,10 +74,9 @@ function UserTable({ users, showClinics = false }: { users: User[]; showClinics?
     [users, q, role],
   );
 
-  const update = (u: User, patch: Partial<User>, action: string) => {
-    mutate((d) => Object.assign(d.users.find((x) => x.id === u.id)!, patch));
-    logAudit({ action, category: "user", target: `${u.name} (${u.email})` });
-    toast.success(`${action}: ${u.name}`);
+  const update = (u: User, patch: Partial<Pick<User, "active" | "forceTwoFactor">>, action: string) => {
+    if (!Object.keys(patch).length) return resetM.mutate(u);
+    patchM.mutate({ u, patch, action });
   };
 
   return (
@@ -84,7 +89,7 @@ function UserTable({ users, showClinics = false }: { users: User[]; showClinics?
         </NativeSelect>
       </div>
       <div className="rounded-lg border bg-card">
-        <ListState items={rows} emptyTitle="No users match">
+        <ListState items={rows} loading={loading} emptyTitle="No users match">
           {(list) => (
             <Table>
               <TableHeader>
@@ -152,12 +157,15 @@ function UserTable({ users, showClinics = false }: { users: User[]; showClinics?
 }
 
 function InviteDialog({ onClose }: { onClose: () => void }) {
-  const users = useApp((s) => s.db.users);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const users = useAdminUsers().data ?? [];
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("support_agent");
+  const inviteM = useApiMutation((body: { name: string; email: string; role: "super_admin" | "support_agent" }) => api("/api/admin/users", { body }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, b) => `Invite emailed to ${b.email}. 2FA required at first sign-in.`,
+    onSuccess: onClose,
+  });
   const emailOk = /^\S+@\S+\.\S+$/.test(email);
   const dup = users.some((u) => u.email.toLowerCase() === email.toLowerCase());
   return (
@@ -176,15 +184,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            disabled={!name.trim() || !emailOk || dup}
-            onClick={() => {
-              mutate((d) => void d.users.push({ id: uid("u"), name: name.trim(), email: email.trim(), role, clinicIds: [], twoFactor: false, forceTwoFactor: true, active: true, invitedAt: new Date().toISOString() }));
-              logAudit({ action: `Invited ${ROLE_LABELS[role]}`, category: "user", target: email });
-              toast.success(`Invite sent to ${email} (simulated). 2FA required.`);
-              onClose();
-            }}
-          >
+          <Button disabled={!name.trim() || !emailOk || dup || inviteM.isPending} onClick={() => inviteM.mutate({ name: name.trim(), email: email.trim(), role: role as "super_admin" | "support_agent" })}>
             Send invite
           </Button>
         </DialogFooter>

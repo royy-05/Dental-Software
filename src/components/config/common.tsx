@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { Weekday, WeeklyHours } from "@/types";
-import { useApp } from "@/store/app";
+import { useState } from "react";
+import type { ClinicFlow, Weekday, WeeklyHours } from "@/types";
+import { useCurrentClinic } from "@/lib/api/session";
+import { useClinicConfig as useApiClinicConfig } from "@/lib/api/clinic";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,23 +21,24 @@ export const WEEKDAYS: { day: Weekday; short: string; long: string }[] = [
   { day: 0, short: "Sun", long: "Sunday" },
 ];
 
-/** Current clinic's config slices, derived outside the zustand selector (v5 needs stable refs). */
+/** Current clinic's configuration (reasons, providers, operatories, ...) loaded from the API. */
 export function useClinicConfig() {
-  const clinicId = useApp((s) => s.session.clinicId);
-  const clinics = useApp((s) => s.db.clinics);
-  const allReasons = useApp((s) => s.db.reasons);
-  const allProviders = useApp((s) => s.db.providers);
-  const allOps = useApp((s) => s.db.operatories);
-  return useMemo(() => {
-    const clinic = clinics.find((c) => c.id === clinicId);
-    return {
-      clinic,
-      clinicId: clinicId ?? "",
-      reasons: allReasons.filter((r) => r.clinicId === clinicId).sort((a, b) => a.order - b.order),
-      providers: allProviders.filter((p) => p.clinicId === clinicId),
-      operatories: allOps.filter((o) => o.clinicId === clinicId),
-    };
-  }, [clinicId, clinics, allReasons, allProviders, allOps]);
+  const clinic = useCurrentClinic();
+  const { config, clinicId, isLoading, isError, refetch } = useApiClinicConfig();
+  return {
+    clinic,
+    clinicId: clinicId ?? "",
+    reasons: config.reasons,
+    providers: config.providers,
+    operatories: config.operatories,
+    insurances: config.insurances,
+    carriers: config.carriers,
+    referrers: config.referrers,
+    flow: config.flow as ClinicFlow | undefined,
+    isLoading: isLoading || !clinic,
+    isError,
+    refetch,
+  };
 }
 
 export function MultiCheck({

@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { format, formatDistanceToNow, startOfMonth } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import type { ClinicStatus } from "@/types";
-import { useApp } from "@/store/app";
+import { useAdminClinics } from "@/lib/api/admin";
 import { downloadCsv } from "@/lib/utils";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
@@ -28,33 +28,19 @@ export default function ClinicsPage() {
 }
 
 function ClinicsList() {
-  const clinics = useApp((s) => s.db.clinics);
-  const plans = useApp((s) => s.db.plans);
-  const users = useApp((s) => s.db.users);
-  const appointments = useApp((s) => s.db.appointments);
+  const query = useAdminClinics();
+  const clinics = useMemo(() => query.data ?? [], [query.data]);
   const allow = useAdminCan();
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
-
-  const monthCounts = useMemo(() => {
-    const from = startOfMonth(new Date()).getTime();
-    const m = new Map<string, number>();
-    for (const a of appointments) if (new Date(a.createdAt).getTime() >= from) m.set(a.clinicId, (m.get(a.clinicId) ?? 0) + 1);
-    return m;
-  }, [appointments]);
 
   const rows = useMemo(
     () =>
       clinics
         .filter((c) => (filter === "deleted" ? !!c.deletedAt : !c.deletedAt && (filter === "all" || c.status === filter)))
         .filter((c) => !q || `${c.name} ${c.slug} ${c.email}`.toLowerCase().includes(q.toLowerCase()))
-        .map((c) => ({
-          clinic: c,
-          plan: plans.find((p) => p.id === c.planId)?.name ?? "—",
-          owner: users.find((u) => u.id === c.ownerUserId)?.name ?? "—",
-          bookings: monthCounts.get(c.id) ?? 0,
-        })),
-    [clinics, plans, users, monthCounts, q, filter],
+        .map((c) => ({ clinic: c, plan: c.planName, owner: c.owner?.name ?? "—", bookings: c.bookingsThisMonth })),
+    [clinics, q, filter],
   );
 
   return (
@@ -89,7 +75,7 @@ function ClinicsList() {
         </NativeSelect>
       </div>
       <div className="rounded-lg border bg-card">
-        <ListState items={rows} emptyTitle="No clinics match" emptyDescription="Try another filter or add a clinic.">
+        <ListState items={rows} loading={query.isLoading} emptyTitle="No clinics match" emptyDescription="Try another filter or add a clinic.">
           {(list) => (
             <Table>
               <TableHeader>

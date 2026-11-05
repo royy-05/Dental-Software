@@ -7,8 +7,9 @@ import type { Channel, MessageTemplate, StarterTemplate, TemplateEvent } from "@
 import { TEMPLATE_EVENT_LABELS } from "@/types";
 import { TEMPLATE_PLACEHOLDERS } from "@/mock/defaults";
 import { smsSegments } from "@/lib/notify";
-import { useApp } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation } from "@/lib/api/session";
+import { useAdminCarriers, useAdminLegal, useAdminStarters, useAdminTemplates } from "@/lib/api/admin";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +22,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AdminGuard, ConfirmDialog, Field, NativeSelect, Section, useAdminCan } from "@/components/admin-pages/common";
 import { ReadOnlyNotice } from "@/components/admin/shell";
+
+const ADMIN_KEYS = [qk.admin()];
 
 export default function LibrariesPage() {
   return (
@@ -44,17 +47,17 @@ export default function LibrariesPage() {
 }
 
 function Carriers() {
-  const carriers = useApp((s) => s.db.carriers);
-  const clinicIns = useApp((s) => s.db.clinicInsurances);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const carriersQ = useAdminCarriers();
+  const carriers = useMemo(() => carriersQ.data ?? [], [carriersQ.data]);
   const canEdit = useAdminCan()("admin:libraries:edit");
+  const addM = useApiMutation((n: string) => api("/api/admin/libraries/carriers", { body: { name: n } }), { invalidate: ADMIN_KEYS, success: (_r, n) => `${n} added`, onSuccess: () => setName("") });
+  const renameM = useApiMutation((v: { id: string; name: string }) => api(`/api/admin/libraries/carriers/${v.id}`, { method: "PATCH", body: { name: v.name } }), { invalidate: ADMIN_KEYS, success: "Carrier renamed", onSuccess: () => setEditing(null) });
+  const removeM = useApiMutation((v: { id: string; name: string }) => api(`/api/admin/libraries/carriers/${v.id}`, { method: "DELETE" }), { invalidate: ADMIN_KEYS, success: (_r, v) => `${v.name} removed` });
   const [name, setName] = useState("");
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
   const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
   const rows = useMemo(() => [...carriers].filter((c) => c.name.toLowerCase().includes(q.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name)), [carriers, q]);
-  const usage = (id: string) => clinicIns.filter((c) => c.carrierId === id).length;
   const dup = (n: string, except?: string) => carriers.some((c) => c.id !== except && c.name.toLowerCase() === n.trim().toLowerCase());
 
   return (
@@ -67,10 +70,7 @@ function Carriers() {
             onSubmit={(e) => {
               e.preventDefault();
               if (!name.trim() || dup(name)) return toast.error(dup(name) ? "Carrier already exists" : "Enter a name");
-              mutate((d) => void d.carriers.push({ id: uid("ins"), name: name.trim() }));
-              logAudit({ action: "Added insurance carrier", category: "settings", target: name.trim() });
-              toast.success(`${name.trim()} added`);
-              setName("");
+              addM.mutate(name.trim());
             }}
           >
             <Input className="h-9 w-56" placeholder="New carrier name" aria-label="New carrier name" value={name} onChange={(e) => setName(e.target.value)} />
@@ -78,13 +78,12 @@ function Carriers() {
           </form>
         )}
       </div>
-      <ListState items={rows} emptyTitle="No carriers">
+      <ListState items={rows} loading={carriersQ.isLoading} emptyTitle="No carriers">
         {(list) => (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Carrier</TableHead>
-                <TableHead>Used by clinics</TableHead>
                 {canEdit && <TableHead><span className="sr-only">Actions</span></TableHead>}
               </TableRow>
             </TableHeader>
@@ -92,7 +91,6 @@ function Carriers() {
               {list.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell>{c.name}</TableCell>
-                  <TableCell>{usage(c.id)}</TableCell>
                   {canEdit && (
                     <TableCell className="text-right">
                       <Button size="xs" variant="ghost" aria-label={`Rename ${c.name}`} onClick={() => setEditing({ ...c })}><Pencil /></Button>
@@ -113,16 +111,7 @@ function Carriers() {
             <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
             <Button
               disabled={!editing?.name.trim() || (editing ? dup(editing.name, editing.id) : true)}
-              onClick={() => {
-                if (!editing) return;
-                mutate((d) => {
-                  d.carriers.find((x) => x.id === editing.id)!.name = editing.name.trim();
-                  d.clinicInsurances.forEach((ci) => ci.carrierId === editing.id && (ci.name = editing.name.trim()));
-                });
-                logAudit({ action: "Renamed insurance carrier", category: "settings", target: editing.name });
-                toast.success("Carrier renamed");
-                setEditing(null);
-              }}
+              onClick={() => editing && renameM.mutate({ id: editing.id, name: editing.name.trim() })}
             >
               Save
             </Button>
@@ -136,38 +125,25 @@ function Carriers() {
         description="Clinics that already use it keep it as a custom carrier."
         confirmLabel="Remove"
         variant="destructive"
-        onConfirm={() => {
-          if (!removing) return;
-          mutate((d) => {
-            d.carriers = d.carriers.filter((x) => x.id !== removing.id);
-            d.clinicInsurances.forEach((ci) => {
-              if (ci.carrierId === removing.id) {
-                ci.carrierId = undefined;
-                ci.custom = true;
-              }
-            });
-          });
-          logAudit({ action: "Removed insurance carrier", category: "settings", target: removing.name });
-          toast.success(`${removing.name} removed`);
-        }}
+        onConfirm={() => removing && removeM.mutate(removing)}
       />
     </Section>
   );
 }
 
 function DefaultTemplates() {
-  const templates = useApp((s) => s.db.templates);
+  const templatesQ = useAdminTemplates();
   const canEdit = useAdminCan()("admin:libraries:edit");
   const [channel, setChannel] = useState<Channel>("email");
   const [editing, setEditing] = useState<MessageTemplate | null>(null);
-  const rows = useMemo(() => templates.filter((t) => t.clinicId === null && t.channel === channel), [templates, channel]);
+  const rows = useMemo(() => (templatesQ.data ?? []).filter((t) => t.clinicId === null && t.channel === channel), [templatesQ.data, channel]);
   return (
     <Section title="Default email and SMS templates" description="New clinics start from these. Clinics edit their own copies under Templates.">
       <div className="mb-3 flex gap-2" role="group" aria-label="Channel">
         <Button size="sm" variant={channel === "email" ? "default" : "outline"} aria-pressed={channel === "email"} onClick={() => setChannel("email")}>Email</Button>
         <Button size="sm" variant={channel === "sms" ? "default" : "outline"} aria-pressed={channel === "sms"} onClick={() => setChannel("sms")}>SMS</Button>
       </div>
-      <ListState items={rows} emptyTitle="No templates">
+      <ListState items={rows} loading={templatesQ.isLoading} emptyTitle="No templates">
         {(list) => (
           <ul className="divide-y">
             {list.map((t) => (
@@ -188,9 +164,12 @@ function DefaultTemplates() {
 }
 
 function TemplateDialog({ template, canEdit, onClose }: { template: MessageTemplate; canEdit: boolean; onClose: () => void }) {
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
   const [v, setV] = useState(template);
+  const saveM = useApiMutation((body: MessageTemplate) => api(`/api/admin/libraries/templates/${template.id}`, { method: "PATCH", body: { subject: body.subject, body: body.body, enabled: body.enabled } }), {
+    invalidate: ADMIN_KEYS,
+    success: "Default template saved",
+    onSuccess: onClose,
+  });
   const seg = smsSegments(v.body);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -216,15 +195,7 @@ function TemplateDialog({ template, canEdit, onClose }: { template: MessageTempl
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>{canEdit ? "Cancel" : "Close"}</Button>
           {canEdit && (
-            <Button
-              disabled={!v.body.trim()}
-              onClick={() => {
-                mutate((d) => Object.assign(d.templates.find((t) => t.id === template.id)!, v));
-                logAudit({ action: "Edited default template", category: "template", target: `${TEMPLATE_EVENT_LABELS[template.event]} (${template.channel})` });
-                toast.success("Default template saved");
-                onClose();
-              }}
-            >
+            <Button disabled={!v.body.trim() || saveM.isPending} onClick={() => saveM.mutate(v)}>
               Save
             </Button>
           )}
@@ -235,14 +206,16 @@ function TemplateDialog({ template, canEdit, onClose }: { template: MessageTempl
 }
 
 function Starters() {
-  const starters = useApp((s) => s.db.starterTemplates);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const startersQ = useAdminStarters();
   const canEdit = useAdminCan()("admin:libraries:edit");
   const [editing, setEditing] = useState<StarterTemplate | null>(null);
+  const publishM = useApiMutation((v: { id: string; name: string; published: boolean }) => api(`/api/admin/libraries/starters/${v.id}`, { method: "PATCH", body: { published: v.published } }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, v) => `${v.name} ${v.published ? "published" : "unpublished"}`,
+  });
   return (
     <>
-      <ListState items={starters} emptyTitle="No starter templates">
+      <ListState items={startersQ.data ?? []} loading={startersQ.isLoading} emptyTitle="No starter templates">
         {(list) => (
           <div className="grid gap-4 md:grid-cols-3">
             {list.map((t) => (
@@ -266,11 +239,7 @@ function Starters() {
                     id={`pub-${t.id}`}
                     checked={t.published}
                     disabled={!canEdit}
-                    onCheckedChange={(on) => {
-                      mutate((d) => void (d.starterTemplates.find((x) => x.id === t.id)!.published = on));
-                      logAudit({ action: `${on ? "Published" : "Unpublished"} starter template`, category: "settings", target: t.name });
-                      toast.success(`${t.name} ${on ? "published" : "unpublished"}`);
-                    }}
+                    onCheckedChange={(on) => publishM.mutate({ id: t.id, name: t.name, published: on })}
                   />
                   <label htmlFor={`pub-${t.id}`} className="text-sm">{t.published ? "Published to clinics" : "Draft"}</label>
                 </div>
@@ -285,9 +254,12 @@ function Starters() {
 }
 
 function StarterDialog({ starter, onClose }: { starter: StarterTemplate; onClose: () => void }) {
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
   const [v, setV] = useState(structuredClone(starter));
+  const saveM = useApiMutation((body: StarterTemplate) => api(`/api/admin/libraries/starters/${starter.id}`, { method: "PATCH", body: { name: body.name.trim(), description: body.description, defaultReasons: body.defaultReasons } }), {
+    invalidate: ADMIN_KEYS,
+    success: "Starter template saved",
+    onSuccess: onClose,
+  });
   const setReason = (i: number, patch: Partial<StarterTemplate["defaultReasons"][number]>) =>
     setV({ ...v, defaultReasons: v.defaultReasons.map((r, j) => (j === i ? { ...r, ...patch } : r)) });
   return (
@@ -324,15 +296,7 @@ function StarterDialog({ starter, onClose }: { starter: StarterTemplate; onClose
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            disabled={!v.name.trim() || v.defaultReasons.some((r) => !r.name.trim())}
-            onClick={() => {
-              mutate((d) => Object.assign(d.starterTemplates.find((x) => x.id === starter.id)!, v));
-              logAudit({ action: "Edited starter template", category: "settings", target: v.name });
-              toast.success("Starter template saved");
-              onClose();
-            }}
-          >
+          <Button disabled={!v.name.trim() || v.defaultReasons.some((r) => !r.name.trim()) || saveM.isPending} onClick={() => saveM.mutate(v)}>
             Save
           </Button>
         </DialogFooter>
@@ -342,13 +306,16 @@ function StarterDialog({ starter, onClose }: { starter: StarterTemplate; onClose
 }
 
 function Legal() {
-  const legal = useApp((s) => s.db.legalTemplates);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const legalQ = useAdminLegal();
   const canEdit = useAdminCan()("admin:libraries:edit");
   const [drafts, setDrafts] = useState<Record<string, { body: string; version: string }>>({});
+  const saveM = useApiMutation((v: { id: string; title: string; body: string; version: string }) => api(`/api/admin/libraries/legal/${v.id}`, { method: "PATCH", body: { body: v.body, version: v.version } }), {
+    invalidate: ADMIN_KEYS,
+    success: (_r, v) => `${v.title} saved`,
+    onSuccess: (_r, v) => setDrafts((d) => ({ ...d, [v.id]: { body: v.body, version: v.version } })),
+  });
   return (
-    <ListState items={legal} emptyTitle="No legal templates">
+    <ListState items={legalQ.data ?? []} loading={legalQ.isLoading} emptyTitle="No legal templates">
       {(list) => (
         <div className="grid gap-4 lg:grid-cols-2">
           {list.map((l) => {
@@ -362,12 +329,8 @@ function Legal() {
                   {canEdit && (
                     <Button
                       className="justify-self-start"
-                      disabled={!dirty || !d.body.trim()}
-                      onClick={() => {
-                        mutate((db) => Object.assign(db.legalTemplates.find((x) => x.id === l.id)!, d));
-                        logAudit({ action: "Edited legal template", category: "settings", target: `${l.title} v${d.version}` });
-                        toast.success(`${l.title} saved`);
-                      }}
+                      disabled={!dirty || !d.body.trim() || saveM.isPending}
+                      onClick={() => saveM.mutate({ id: l.id, title: l.title, body: d.body, version: d.version })}
                     >
                       Save {l.title}
                     </Button>

@@ -2,9 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { Check, Plus } from "lucide-react";
-import { toast } from "sonner";
 import type { Specialty } from "@/types";
-import { useApp } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation } from "@/lib/api/session";
+import { useAdminClinics, useAdminPlans, useAdminStarters, useAdminUsers } from "@/lib/api/admin";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -14,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Field, NativeSelect } from "./common";
-import { createClinic, TIME_ZONES, type NewClinicInput } from "./clinic-ops";
+import { TIME_ZONES, type NewClinicInput } from "./clinic-ops";
 import { isSlugTaken, parseCsv, slugify } from "./metrics";
 
 const STEPS = ["Details", "Booking link", "Owner", "Plan", "Starter template", "Import"] as const;
@@ -25,10 +26,10 @@ const PROVIDER_SAMPLE = "display_name,role,id\nDr. Riley Quinn,Doctor,PMS-101\nJ
 export function AddClinicWizard() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
-  const db = useApp((s) => s.db);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
-  const userName = useApp((s) => s.db.users.find((u) => u.id === s.session.userId)?.name ?? "Admin");
+  const clinics = useAdminClinics().data ?? [];
+  const usersData = useAdminUsers().data;
+  const plans = useAdminPlans().data ?? [];
+  const starters = useAdminStarters().data ?? [];
 
   const initial = {
     name: "",
@@ -52,11 +53,11 @@ export function AddClinicWizard() {
   const [touched, setTouched] = useState(false);
   const set = <K extends keyof typeof v>(k: K, val: (typeof v)[K]) => setV((p) => ({ ...p, [k]: val }));
 
-  const owners = useMemo(() => db.users.filter((u) => u.role === "clinic_owner" && u.active), [db.users]);
+  const owners = useMemo(() => (usersData ?? []).filter((u) => u.role === "clinic_owner" && u.active), [usersData]);
   const reasons = useMemo(() => parseCsv(v.reasonsCsv), [v.reasonsCsv]);
   const providers = useMemo(() => parseCsv(v.providersCsv), [v.providersCsv]);
   const slug = v.slug || slugify(v.name);
-  const slugTaken = isSlugTaken(slug, db.clinics);
+  const slugTaken = isSlugTaken(slug, clinics);
 
   const errors: Record<number, string | null> = {
     0: !v.name.trim() ? "Clinic name is required." : !/^\S+@\S+\.\S+$/.test(v.email) ? "Enter a valid clinic email." : null,
@@ -74,6 +75,16 @@ export function AddClinicWizard() {
     setStep((s) => Math.min(s + 1, STEPS.length - 1));
   };
 
+  const create = useApiMutation((input: NewClinicInput) => api<{ id: string; name: string }>("/api/admin/clinics", { body: input }), {
+    invalidate: [qk.admin()],
+    success: (_r, input) => (input.owner.mode === "invite" ? `Clinic created. Invite emailed to ${input.owner.email}.` : "Clinic created"),
+    onSuccess: () => {
+      setOpen(false);
+      setStep(0);
+      setV(initial);
+    },
+  });
+
   const finish = () => {
     const input: NewClinicInput = {
       name: v.name.trim(),
@@ -90,16 +101,7 @@ export function AddClinicWizard() {
       importReasons: reasons,
       importProviders: providers,
     };
-    let name = "";
-    mutate((d) => {
-      name = createClinic(d, input, userName).name;
-    });
-    logAudit({ action: "Created clinic", category: "clinic", target: name, details: `Plan ${v.planId}, ${reasons.length} reasons and ${providers.length} providers imported` });
-    if (v.ownerMode === "invite") toast.success(`Clinic created. Invite sent to ${v.ownerEmail} (simulated).`);
-    else toast.success("Clinic created");
-    setOpen(false);
-    setStep(0);
-    setV(initial);
+    create.mutate(input);
   };
 
   const readFile = (file: File | undefined, key: "reasonsCsv" | "providersCsv") => {
@@ -177,7 +179,7 @@ export function AddClinicWizard() {
                 {v.ownerMode === "invite" ? (
                   <div className="grid gap-3 sm:grid-cols-2">
                     <Field label="Owner name" htmlFor="w-oname"><Input id="w-oname" value={v.ownerName} onChange={(e) => set("ownerName", e.target.value)} /></Field>
-                    <Field label="Owner email" htmlFor="w-oemail" hint="An invite email is simulated."><Input id="w-oemail" type="email" value={v.ownerEmail} onChange={(e) => set("ownerEmail", e.target.value)} /></Field>
+                    <Field label="Owner email" htmlFor="w-oemail" hint="They get an email with a link to set their password."><Input id="w-oemail" type="email" value={v.ownerEmail} onChange={(e) => set("ownerEmail", e.target.value)} /></Field>
                   </div>
                 ) : (
                   <Field label="Owner" htmlFor="w-oid">
@@ -192,7 +194,7 @@ export function AddClinicWizard() {
             {step === 3 && (
               <div className="grid gap-3">
                 <div className="grid gap-2 sm:grid-cols-3">
-                  {db.plans.map((p) => (
+                  {plans.map((p) => (
                     <button type="button" key={p.id} onClick={() => set("planId", p.id)} aria-pressed={v.planId === p.id} className={cn("rounded-md border p-3 text-left text-sm", v.planId === p.id && "border-primary bg-secondary/50")}>
                       <span className="block font-semibold">{p.name}</span>
                       <span className="block text-muted-foreground">${p.priceMonthly}/mo</span>
@@ -208,7 +210,7 @@ export function AddClinicWizard() {
             )}
             {step === 4 && (
               <div className="grid gap-2">
-                {db.starterTemplates.filter((t) => t.published).map((t) => (
+                {starters.filter((t) => t.published).map((t) => (
                   <label key={t.id} className={cn("flex cursor-pointer gap-3 rounded-md border p-3 text-sm", v.starterTemplateId === t.id && "border-primary bg-secondary/40")}>
                     <input type="radio" name="w-starter" checked={v.starterTemplateId === t.id} onChange={() => set("starterTemplateId", t.id)} />
                     <span>
@@ -264,7 +266,7 @@ export function AddClinicWizard() {
 
           <DialogFooter>
             {step > 0 && <Button variant="outline" onClick={() => setStep((s) => s - 1)}>Back</Button>}
-            {step < STEPS.length - 1 ? <Button onClick={next}>Next</Button> : <Button onClick={finish}>Create clinic</Button>}
+            {step < STEPS.length - 1 ? <Button onClick={next}>Next</Button> : <Button onClick={finish} disabled={create.isPending}>{create.isPending ? "Creating…" : "Create clinic"}</Button>}
           </DialogFooter>
         </DialogContent>
       </Dialog>

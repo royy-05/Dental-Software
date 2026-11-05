@@ -4,7 +4,9 @@ import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { Moon, Send, Smartphone } from "lucide-react";
 import { toast } from "sonner";
-import { useApp } from "@/store/app";
+import { api } from "@/lib/api/client";
+import { useAppointments, useMessages, useOptOuts } from "@/lib/api/clinic";
+import { qk, useApiMutation, useClinicId, useCurrentClinic } from "@/lib/api/session";
 import { nowInZone, toWall } from "@/lib/time";
 import { quietHoursDeferral } from "@/lib/notify";
 import { cn } from "@/lib/utils";
@@ -15,15 +17,17 @@ import { Label } from "@/components/ui/label";
 
 /**
  * Two-way SMS simulator (section 7): pretend to be a patient replying C / STOP / HELP / START.
- * Replies hit the same store action a Twilio webhook would call in production.
+ * Replies go to /api/clinics/:id/sms/simulate, which runs the same handler as the provider webhook (DEMO_MODE only).
+ * Quiet hours shown are the platform defaults (9 pm - 8 am); the server applies the configured values.
  */
+const QUIET = { quietHoursStart: 21, quietHoursEnd: 8 };
 export function SmsSimulator({ clinicId, defaultPhone }: { clinicId: string; defaultPhone?: string }) {
-  const clinic = useApp((s) => s.db.clinics.find((c) => c.id === clinicId));
-  const appointments = useApp((s) => s.db.appointments);
-  const messages = useApp((s) => s.db.messages);
-  const optOuts = useApp((s) => s.db.optOuts);
-  const quiet = useApp((s) => s.db.platform.messaging);
-  const simulate = useApp((s) => s.simulateInboundSms);
+  const selectedClinicId = useClinicId();
+  const clinic = useCurrentClinic();
+  const appointmentsQuery = useAppointments({});
+  const appointments = useMemo(() => appointmentsQuery.data ?? [], [appointmentsQuery.data]);
+  const optOuts = useOptOuts().data ?? [];
+  const quiet = QUIET;
   const phi = usePhiText();
 
   const upcoming = useMemo(() => {
@@ -35,23 +39,36 @@ export function SmsSimulator({ clinicId, defaultPhone }: { clinicId: string; def
       .slice(0, 25);
   }, [appointments, clinic, clinicId]);
 
-  const [phone, setPhone] = useState(defaultPhone ?? upcoming.find((a) => a.status === "unconfirmed")?.patient.phone ?? upcoming[0]?.patient.phone ?? "");
+  const [phone, setPhone] = useState(defaultPhone ?? "");
   const [text, setText] = useState("");
+  // Default to the first unconfirmed upcoming appointment once the list has loaded.
+  const fallbackPhone = upcoming.find((a) => a.status === "unconfirmed")?.patient.phone ?? upcoming[0]?.patient.phone ?? "";
+  const activePhone = phone || fallbackPhone;
 
-  if (!clinic) return null;
+  const smsQuery = useMessages({ channel: "sms", limit: 500 }, { refetchInterval: 15_000 });
+  const messages = useMemo(() => smsQuery.data ?? [], [smsQuery.data]);
+  const simulate = useApiMutation((body: { from: string; text: string }) => api<{ intent: string; reply: string }>(`/api/clinics/${selectedClinicId}/sms/simulate`, { body }), {
+    invalidate: [qk.clinicRes(selectedClinicId, "messages"), qk.clinicRes(selectedClinicId, "appointments"), qk.clinicRes(selectedClinicId, "opt-outs"), qk.clinicRes(selectedClinicId, "appointment")],
+    success: false,
+    onSuccess: (r) => {
+      toast.success("Reply processed", { description: r.reply });
+      setText("");
+    },
+  });
+
+  if (!clinic || clinic.id !== clinicId) return null;
+  const phoneAppts = new Set(appointments.filter((a) => a.patient.phone === activePhone).map((a) => a.id));
   const thread = messages
-    .filter((m) => m.clinicId === clinicId && m.channel === "sms" && (m.to === phone || (m.direction === "inbound" && m.appointmentId && appointments.find((a) => a.id === m.appointmentId)?.patient.phone === phone)))
+    .filter((m) => m.channel === "sms" && (m.to === activePhone || (m.direction === "inbound" && m.appointmentId && phoneAppts.has(m.appointmentId))))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .slice(-12);
-  const optedOut = optOuts.some((o) => o.clinicId === clinicId && o.phone === phone);
+  const optedOut = optOuts.some((o) => o.phone === activePhone && o.kind === "sms_stop");
   const localNow = nowInZone(clinic.timeZone);
   const quietUntil = quietHoursDeferral(localNow, { start: quiet.quietHoursStart, end: quiet.quietHoursEnd });
 
   const send = (body: string) => {
-    if (!phone || !body.trim()) return;
-    const [, reply] = simulate(clinicId, phone, body.trim());
-    toast.success("Reply processed", { description: reply?.body });
-    setText("");
+    if (!activePhone || !body.trim()) return;
+    simulate.mutate({ from: activePhone, text: body.trim() });
   };
 
   return (
@@ -59,7 +76,7 @@ export function SmsSimulator({ clinicId, defaultPhone }: { clinicId: string; def
       <div className="grid content-start gap-3">
         <div className="grid gap-1.5">
           <Label htmlFor="sim-phone">Patient mobile</Label>
-          <select id="sim-phone" className="h-10 rounded-md border border-input bg-card px-3 text-sm" value={phone} onChange={(e) => setPhone(e.target.value)}>
+          <select id="sim-phone" className="h-10 rounded-md border border-input bg-card px-3 text-sm" value={activePhone} onChange={(e) => setPhone(e.target.value)}>
             {upcoming.length === 0 && <option value="">No upcoming appointments</option>}
             {[...new Map(upcoming.map((a) => [a.patient.phone, a])).values()].map((a) => (
               <option key={a.id} value={a.patient.phone}>
@@ -73,7 +90,7 @@ export function SmsSimulator({ clinicId, defaultPhone }: { clinicId: string; def
         </p>
         <div className="flex flex-wrap gap-2">
           {["C", "STOP", "HELP", "START"].map((k) => (
-            <Button key={k} variant="outline" size="sm" onClick={() => send(k)} disabled={!phone}>
+            <Button key={k} variant="outline" size="sm" onClick={() => send(k)} disabled={!activePhone || simulate.isPending}>
               Reply “{k}”
             </Button>
           ))}
@@ -86,7 +103,7 @@ export function SmsSimulator({ clinicId, defaultPhone }: { clinicId: string; def
           }}
         >
           <Input aria-label="Custom reply" placeholder="Type any reply…" value={text} onChange={(e) => setText(e.target.value)} />
-          <Button type="submit" size="icon" aria-label="Send reply" disabled={!phone}>
+          <Button type="submit" size="icon" aria-label="Send reply" disabled={!activePhone || simulate.isPending}>
             <Send />
           </Button>
         </form>
@@ -99,7 +116,7 @@ export function SmsSimulator({ clinicId, defaultPhone }: { clinicId: string; def
       </div>
       <div className="rounded-xl border bg-slate-50 p-3" aria-label="SMS thread" role="log">
         <p className="mb-2 flex items-center gap-1 text-xs font-medium text-muted-foreground">
-          <Smartphone className="h-3.5 w-3.5" aria-hidden /> {phi(phone) || "No number"}
+          <Smartphone className="h-3.5 w-3.5" aria-hidden /> {phi(activePhone) || "No number"}
         </p>
         <div className="flex max-h-80 flex-col gap-2 overflow-y-auto">
           {thread.length === 0 && <p className="py-6 text-center text-xs text-muted-foreground">No texts with this number yet.</p>}

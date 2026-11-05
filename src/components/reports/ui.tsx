@@ -1,38 +1,23 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { format } from "date-fns";
 import type { Source } from "@/types";
 import { SOURCE_LABELS } from "@/types";
-import { useApp, useCurrentClinic } from "@/store/app";
+import { useCurrentClinic } from "@/lib/api/session";
+import type { DayRange } from "@/lib/api/clinic";
+import { useClinicConfig } from "@/components/config/common";
 import { nowInZone } from "@/lib/time";
-import { rangeFor, type DateRange } from "@/lib/range";
+import { previousRange, rangeFor, type DateRange } from "@/lib/range";
 import type { RangeValue } from "@/components/shared/range-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { WEEKDAYS, hourLabel, REPORT_SOURCES, type Heatmap } from "./aggregate";
 
-/** Current clinic's report inputs, derived with stable memoization. */
+/** Current clinic's report inputs: clinic, configuration and clinic-local "now". Numbers come from the SQL report routes. */
 export function useReportScope() {
   const clinic = useCurrentClinic();
-  const allAppts = useApp((s) => s.db.appointments);
-  const allSessions = useApp((s) => s.db.widgetSessions);
-  const allReasons = useApp((s) => s.db.reasons);
-  const allProviders = useApp((s) => s.db.providers);
-  const allSpend = useApp((s) => s.db.adSpend);
-  const allReferrers = useApp((s) => s.db.referrers);
-  const id = clinic?.id;
-  return useMemo(
-    () => ({
-      clinic,
-      appts: allAppts.filter((a) => a.clinicId === id),
-      sessions: allSessions.filter((s) => s.clinicId === id),
-      reasons: allReasons.filter((r) => r.clinicId === id),
-      providers: allProviders.filter((p) => p.clinicId === id),
-      spend: allSpend.filter((s) => s.clinicId === id),
-      referrers: allReferrers.filter((r) => r.clinicId === id),
-      now: clinic ? nowInZone(clinic.timeZone) : new Date(),
-    }),
-    [clinic, id, allAppts, allSessions, allReasons, allProviders, allSpend, allReferrers],
-  );
+  const { reasons, providers, referrers } = useClinicConfig();
+  return useMemo(() => ({ clinic, reasons, providers, referrers, now: clinic ? nowInZone(clinic.timeZone) : new Date() }), [clinic, reasons, providers, referrers]);
 }
 
 export function useRange(initial: RangeValue["preset"] = "month") {
@@ -42,7 +27,12 @@ export function useRange(initial: RangeValue["preset"] = "month") {
     const now = clinic ? nowInZone(clinic.timeZone) : new Date();
     return rangeFor(value.preset, now, value.from && value.to ? { from: value.from, to: value.to } : undefined);
   }, [value, clinic]);
-  return { value, setValue, range };
+  const dayRange: DayRange = useMemo(() => ({ from: format(range.from, "yyyy-MM-dd"), to: format(range.to, "yyyy-MM-dd") }), [range]);
+  const prevDayRange: DayRange = useMemo(() => {
+    const p = previousRange(range);
+    return { from: format(p.from, "yyyy-MM-dd"), to: format(p.to, "yyyy-MM-dd") };
+  }, [range]);
+  return { value, setValue, range, dayRange, prevDayRange };
 }
 
 export function SourceFilter({ value, onChange, includeStaff = false }: { value: Source | "all"; onChange: (v: Source | "all") => void; includeStaff?: boolean }) {

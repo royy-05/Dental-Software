@@ -88,7 +88,7 @@ export function dropOffByReason(sessions: WidgetSession[], reasons: Reason[]): R
       dropPct: pct(v.visits - v.booked, v.visits),
       conversion: pct(v.booked, v.visits),
     }))
-    .sort((a, b) => b.visits - a.visits);
+    .sort((a, b) => b.visits - a.visits || a.name.localeCompare(b.name));
 }
 
 export type Heatmap = number[][]; // [weekday][hour]

@@ -7,8 +7,8 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { LifeBuoy } from "lucide-react";
 import type { Ticket } from "@/types";
-import { useApp, useCurrentClinic, useCurrentUser } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { qk, useApiMutation, useClinicId } from "@/lib/api/session";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -38,31 +38,22 @@ type FormValues = z.infer<typeof schema>;
 export function RaiseTicketDialog({ trigger }: { trigger?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const clinic = useCurrentClinic();
-  const user = useCurrentUser();
-  const mutate = useApp((s) => s.mutate);
+  const clinicId = useClinicId();
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { subject: "", category: "question", priority: "normal", body: "" } });
+  const create = useApiMutation((body: FormValues & { screenshotName?: string }) => api<Ticket>(`/api/clinics/${clinicId}/tickets`, { body }), {
+    invalidate: [qk.clinicRes(clinicId, "tickets")],
+    success: false,
+    onSuccess: (t) => {
+      toast.success(`Ticket ${t.id} sent to Kivi support`);
+      form.reset();
+      setFile(null);
+      setOpen(false);
+    },
+  });
 
   const onSubmit = (v: FormValues) => {
-    if (!clinic || !user) return;
-    const now = new Date().toISOString();
-    const ticket: Ticket = {
-      id: `t_${Math.floor(1000 + Math.random() * 9000)}`,
-      clinicId: clinic.id,
-      subject: v.subject,
-      category: v.category,
-      priority: v.priority,
-      status: "open",
-      createdAt: now,
-      createdBy: user.name,
-      screenshotName: file?.name,
-      messages: [{ id: uid("tm"), at: now, authorName: user.name, authorRole: user.role, body: v.body }],
-    };
-    mutate((db) => void db.tickets.unshift(ticket));
-    toast.success(`Ticket ${ticket.id} sent to Kivi support`);
-    form.reset();
-    setFile(null);
-    setOpen(false);
+    if (!clinicId) return;
+    create.mutate({ ...v, screenshotName: file?.name });
   };
 
   return (
@@ -117,7 +108,7 @@ export function RaiseTicketDialog({ trigger }: { trigger?: React.ReactNode }) {
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit">Send ticket</Button>
+            <Button type="submit" disabled={create.isPending}>{create.isPending ? "Sending…" : "Send ticket"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

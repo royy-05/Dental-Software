@@ -4,7 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { FeatureKey } from "@/types";
 import type { Permission } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
-import { useCurrentClinic } from "@/store/app";
+import { useCurrentClinic } from "@/lib/api/session";
 import { RequirePermission, useCan, useFeature } from "@/components/shared/guards";
 import { PageHeader } from "@/components/shared/page-header";
 import { LoadingState } from "@/components/shared/states";

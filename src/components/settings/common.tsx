@@ -2,24 +2,46 @@
 
 import { toast } from "sonner";
 import type { Clinic } from "@/types";
-import { useApp, useCurrentClinic } from "@/store/app";
+import { useQueryClient } from "@tanstack/react-query";
+import { api, errorMessage } from "@/lib/api/client";
+import { clinicPath } from "@/lib/api/clinic";
+import { qk, useClinicId, useCurrentClinic } from "@/lib/api/session";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 
-/** Save helper: mutates the current clinic, writes an audit entry and toasts. */
+/**
+ * Save helper: applies `fn` to a copy of the current clinic, works out which sections changed and sends them to the
+ * matching API route (profile, hours or insurance settings). The server validates and writes the audit entry.
+ */
 export function useSaveClinic() {
   const clinic = useCurrentClinic();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const clinicId = useClinicId();
+  const qc = useQueryClient();
   return (action: string, fn: (c: Clinic) => void, opts: { toast?: string | false } = {}) => {
-    if (!clinic) return;
-    mutate((db) => {
-      const c = db.clinics.find((x) => x.id === clinic.id);
-      if (c) fn(c);
-    });
-    logAudit({ action, category: "settings", target: clinic.name, clinicId: clinic.id });
-    if (opts.toast !== false) toast.success(opts.toast ?? "Settings saved");
+    if (!clinic || !clinicId) return;
+    const next = structuredClone(clinic);
+    fn(next);
+    const changed = <K extends keyof Clinic>(k: K) => JSON.stringify(next[k]) !== JSON.stringify(clinic[k]);
+    const profile: Record<string, unknown> = {};
+    for (const k of ["name", "phone", "email", "address", "description", "branding", "settings"] as const) if (changed(k)) profile[k] = next[k];
+    if (changed("rwg")) profile.rwg = { enabled: next.rwg.enabled, websiteUrl: next.rwg.websiteUrl };
+    if (changed("retentionDays")) profile.retentionDays = next.retentionDays ?? null;
+    const calls: Promise<unknown>[] = [];
+    if (Object.keys(profile).length) calls.push(api(clinicPath(clinicId, "/profile"), { method: "PATCH", body: profile }));
+    if (changed("hours")) calls.push(api(clinicPath(clinicId, "/schedule/hours"), { method: "PUT", body: next.hours }));
+    if (changed("insuranceSettings")) calls.push(api(clinicPath(clinicId, "/insurance-settings"), { method: "PUT", body: next.insuranceSettings }));
+    if (changed("customDomain")) {
+      toast.error("Custom domains are set up by the Kivi team. Raise a ticket with the domain you want.");
+      return;
+    }
+    if (!calls.length) return;
+    void Promise.all(calls)
+      .then(async () => {
+        await qc.invalidateQueries({ queryKey: qk.clinic(clinicId) });
+        if (opts.toast !== false) toast.success(opts.toast ?? "Settings saved");
+      })
+      .catch((e) => toast.error(errorMessage(e)));
   };
 }
 

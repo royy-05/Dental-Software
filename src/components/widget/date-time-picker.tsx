@@ -28,12 +28,14 @@ export interface DateTimePickerProps {
   slotsFor: (day: Date) => Slot[];
   selectedStart?: Date;
   onSelect: (slot: Slot) => void;
+  /** Availability or slots are still loading from the server. */
+  loading?: boolean;
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** Month calendar (available / selected / unavailable days) + slots grouped Morning / Afternoon / Evening. */
-export function DateTimePicker({ timeZone, now, maxDays, availability, slotsFor, selectedStart, onSelect }: DateTimePickerProps) {
+export function DateTimePicker({ timeZone, now, maxDays, availability, slotsFor, selectedStart, onSelect, loading = false }: DateTimePickerProps) {
   const { branding, mobile } = useWidgetUi();
   const today = startOfDay(now);
   const lastDay = addDays(today, maxDays);
@@ -169,8 +171,9 @@ export function DateTimePicker({ timeZone, now, maxDays, availability, slotsFor,
             <Globe className="h-3.5 w-3.5" aria-hidden /> Times in {timeZone.replace(/_/g, " ")} ({tzAbbrev(timeZone)})
           </p>
         </div>
-        {day && slots.length === 0 && <p className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No times left on this day. Please choose another day.</p>}
-        {!day && <p className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No available days this month. Try the next month.</p>}
+        {loading && <p role="status" className="mb-2 text-xs text-muted-foreground">Checking availability…</p>}
+        {day && slots.length === 0 && !loading && <p className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No times left on this day. Please choose another day.</p>}
+        {!day && !loading && <p className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No available days this month. Try the next month.</p>}
         <div className="grid gap-4">
           {(["Morning", "Afternoon", "Evening"] as const).map((part) =>
             groups[part].length ? (
