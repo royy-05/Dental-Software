@@ -2,7 +2,7 @@
  * Application logger. Never pass patient data: names, phones, emails and message bodies are redacted
  * by key as a second line of defence.
  */
-const REDACT = /^(name|firstName|lastName|patient|phone|email|to|body|subject|dob|message|password|code|token|answers|insurance)$/i;
+const REDACT = /^(name|firstName|lastName|patient|phone|email|to|body|subject|dob|message|password|code|token|secret|answers|insurance|subscriberId|ssn|authorization|cookie|totpSecret|totpSecretEnc)$/i;
 
 function scrub(v: unknown, depth = 0): unknown {
   if (depth > 4 || v === null || typeof v !== "object") return v;

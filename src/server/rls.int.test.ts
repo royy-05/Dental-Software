@@ -38,10 +38,27 @@ describe("row-level security (clinic isolation)", () => {
   });
 
   it("cannot read another clinic's row even by primary key", async () => {
-    const otherAppt = await withTenant(B, (tx) => tx.appointment.findFirstOrThrow({ select: { id: true } }));
+    const otherAppt = await withTenant(B, (tx) => tx.appointment.findFirstOrThrow({ select: { id: true, patientId: true } }));
     await withTenant(A, async (tx) => {
       expect(await tx.appointment.findUnique({ where: { id: otherAppt.id } })).toBeNull();
+      expect(await tx.patient.findUnique({ where: { id: otherAppt.patientId } })).toBeNull();
       expect(await tx.clinic.findUnique({ where: { id: B } })).toBeNull();
+    });
+  });
+
+  it("cannot read another clinic's notes, consents, tickets or flow versions", async () => {
+    const bData = await withTenant(B, async (tx) => {
+      const patient = await tx.patient.findFirstOrThrow({ select: { id: true } });
+      const consent = await tx.consentRecord.findFirst({ select: { id: true } });
+      const ticket = await tx.ticket.findFirst({ select: { id: true } });
+      return { patientId: patient.id, consentId: consent?.id, ticketId: ticket?.id };
+    });
+
+    await withTenant(A, async (tx) => {
+      expect(await tx.patient.findUnique({ where: { id: bData.patientId } })).toBeNull();
+      if (bData.consentId) expect(await tx.consentRecord.findUnique({ where: { id: bData.consentId } })).toBeNull();
+      if (bData.ticketId) expect(await tx.ticket.findUnique({ where: { id: bData.ticketId } })).toBeNull();
+      expect(await tx.clinicFlow.findUnique({ where: { clinicId: B } })).toBeNull();
     });
   });
 
