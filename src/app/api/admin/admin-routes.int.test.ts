@@ -23,10 +23,15 @@ import * as announcements from "./announcements/route";
 import * as me from "@/app/api/me/route";
 import * as clinicData from "@/app/api/clinics/[clinicId]/data/route";
 
+const created: string[] = [];
 beforeAll(async () => {
   await prisma.rateLimit.deleteMany();
 });
-afterAll(() => prisma.$disconnect());
+afterAll(async () => {
+  // Other suites count the 5 seeded clinics; remove the one the wizard test created.
+  if (created.length) await withPlatform((tx) => tx.clinic.deleteMany({ where: { id: { in: created } } }));
+  await prisma.$disconnect();
+});
 
 describe("super admin panel", () => {
   it("support agents can read but not change plans, features, clinics or users", async () => {
@@ -56,6 +61,7 @@ describe("super admin panel", () => {
     };
     const r = await call(clinics.POST, { body });
     expect(r.status).toBe(200);
+    created.push(r.json.id);
     expect(r.json.status).toBe("trial");
     expect(memoryOutbox.some((m) => m.to === email && /invite/.test(m.text))).toBe(true);
     const detail = await call(clinic.GET, { params: { id: r.json.id } });

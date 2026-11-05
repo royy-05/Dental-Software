@@ -12,12 +12,13 @@
     "check": "npm run lint && npm run typecheck && npm run test",
     "test:unit": "SKIP_DB_SETUP=1 vitest run --exclude 'src/**/*.int.test.ts'",
     "test:e2e": "playwright test",
-    "db:migrate": "dotenv -- prisma migrate deploy",
-    "db:migrate:dev": "dotenv -- prisma migrate dev",
-    "db:seed": "dotenv -- tsx prisma/seed.ts",
-    "db:setup": "dotenv -- sh -c 'prisma migrate deploy && tsx scripts/setup-jobs.ts && tsx prisma/seed.ts'",
-    "worker": "dotenv -- tsx src/server/jobs/worker.ts",
-    "postinstall": "prisma generate"
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:seed": "tsx -r ./scripts/env.cjs prisma/seed.ts",
+    "db:setup": "prisma migrate deploy && tsx -r ./scripts/env.cjs scripts/setup-jobs.ts && tsx -r ./scripts/env.cjs prisma/seed.ts",
+    "worker": "tsx -r ./scripts/env.cjs src/server/jobs/worker.ts",
+    "postinstall": "prisma generate",
+    "docs:api": "tsx -r ./scripts/env.cjs scripts/docs-api.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -67,7 +68,6 @@
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.6.2",
     "dotenv": "^18.0.9",
-    "dotenv-cli": "^11.1.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^15.5.29",
     "postcss": "^8.5.32",
@@ -79,6 +79,6 @@
     "vitest": "^5.1.0"
   },
   "prisma": {
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx -r ./scripts/env.cjs prisma/seed.ts"
   }
 }

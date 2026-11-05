@@ -8,7 +8,6 @@ import * as reasons from "./[clinicId]/reasons/route";
 import * as reason from "./[clinicId]/reasons/[id]/route";
 import * as reorder from "./[clinicId]/reasons/reorder/route";
 import * as duplicate from "./[clinicId]/reasons/[id]/duplicate/route";
-import * as providers from "./[clinicId]/providers/route";
 import * as provider from "./[clinicId]/providers/[id]/route";
 import * as operatories from "./[clinicId]/operatories/route";
 import * as operatory from "./[clinicId]/operatories/[id]/route";
