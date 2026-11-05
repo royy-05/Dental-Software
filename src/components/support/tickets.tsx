@@ -3,11 +3,12 @@
 import { useMemo, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { ArrowLeft, Paperclip, Send } from "lucide-react";
-import { toast } from "sonner";
 import type { Ticket, TicketPriority, TicketStatus } from "@/types";
 import { ROLE_LABELS } from "@/types";
-import { useApp, useCurrentUser } from "@/store/app";
-import { cn, uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { useTickets } from "@/lib/api/clinic";
+import { qk, useApiMutation, useClinicId } from "@/lib/api/session";
+import { cn } from "@/lib/utils";
 import { TICKET_CATEGORIES } from "@/components/clinic/raise-ticket";
 import { ListState } from "@/components/shared/states";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
@@ -64,10 +65,17 @@ export function TicketList({ tickets, onOpen }: { tickets: Ticket[]; onOpen: (id
 }
 
 export function TicketThread({ ticket, onBack }: { ticket: Ticket; onBack: () => void }) {
-  const user = useCurrentUser();
-  const mutate = useApp((s) => s.mutate);
+  const clinicId = useClinicId();
   const [body, setBody] = useState("");
   const [error, setError] = useState<string>();
+  const send = useApiMutation((text: string) => api<Ticket>(`/api/clinics/${clinicId}/tickets/${ticket.id}/messages`, { body: { body: text } }), {
+    invalidate: [qk.clinicRes(clinicId, "tickets")],
+    success: () => (ticket.status === "resolved" || ticket.status === "closed" ? "Reply sent and ticket reopened" : "Reply sent"),
+    onSuccess: () => {
+      setBody("");
+      setError(undefined);
+    },
+  });
 
   const reply = (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,17 +83,7 @@ export function TicketThread({ ticket, onBack }: { ticket: Ticket; onBack: () =>
       setError("Write a reply first.");
       return;
     }
-    if (!user) return;
-    const reopened = ticket.status === "resolved" || ticket.status === "closed";
-    mutate((db) => {
-      const t = db.tickets.find((x) => x.id === ticket.id);
-      if (!t) return;
-      t.messages.push({ id: uid("tm"), at: new Date().toISOString(), authorName: user.name, authorRole: user.role, body: body.trim() });
-      t.status = statusAfterClinicReply(t.status);
-    });
-    toast.success(reopened ? "Reply sent and ticket reopened" : "Reply sent");
-    setBody("");
-    setError(undefined);
+    send.mutate(body.trim());
   };
 
   return (
@@ -137,8 +135,8 @@ export function TicketThread({ ticket, onBack }: { ticket: Ticket; onBack: () =>
               </p>
             )}
             <div className="flex justify-end">
-              <Button type="submit">
-                <Send /> Send reply
+              <Button type="submit" disabled={send.isPending}>
+                <Send /> {send.isPending ? "Sending…" : "Send reply"}
               </Button>
             </div>
           </form>
@@ -148,10 +146,10 @@ export function TicketThread({ ticket, onBack }: { ticket: Ticket; onBack: () =>
   );
 }
 
-export function useClinicTickets(clinicId: string | undefined, status: TicketStatus | "all") {
-  const tickets = useApp((s) => s.db.tickets);
-  return useMemo(
-    () => tickets.filter((t) => t.clinicId === clinicId && (status === "all" || t.status === status)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    [tickets, clinicId, status],
-  );
+/** The selected clinic's tickets (from the API), filtered by status. */
+export function useClinicTickets(status: TicketStatus | "all") {
+  const query = useTickets();
+  const tickets = useMemo(() => query.data ?? [], [query.data]);
+  const list = useMemo(() => tickets.filter((t) => status === "all" || t.status === status).sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [tickets, status]);
+  return { list, all: tickets, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
 }

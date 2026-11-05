@@ -1,22 +1,24 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { addDays, format } from "date-fns";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useApp } from "@/store/app";
-import { firstAvailable, getSlotsForDay, groupByDayPart, type Slot } from "@/lib/slots";
+import { useStaffSlots } from "@/lib/api/clinic";
+import { useClinicConfig } from "@/lib/api/clinic";
+import { useClinicBundle } from "@/lib/api/session";
+import { groupByDayPart, type Slot } from "@/lib/slots";
 import { dayKey, fromDayKey, nowInZone, tzAbbrev } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LoadingState } from "@/components/shared/states";
 
 /**
- * Staff slot picker: same slot engine as the widget but with staffOverride
+ * Staff slot picker: the server runs the same slot engine as the widget with staffOverride
  * (ignores min notice, booking window, daily cap and online visibility).
  */
 export function SlotPicker({
-  clinicId,
   reasonId,
   providerId,
   ignoreAppointmentId,
@@ -24,7 +26,7 @@ export function SlotPicker({
   onChange,
   initialDate,
 }: {
-  clinicId: string;
+  clinicId?: string;
   reasonId?: string;
   providerId?: string; // undefined / "any" = first available
   ignoreAppointmentId?: string;
@@ -32,26 +34,13 @@ export function SlotPicker({
   onChange: (s: Slot | null) => void;
   initialDate?: string;
 }) {
-  const clinic = useApp((s) => s.db.clinics.find((c) => c.id === clinicId));
-  const appointments = useApp((s) => s.db.appointments);
-  const holds = useApp((s) => s.db.holds);
-  const providers = useApp((s) => s.db.providers);
-  const reasons = useApp((s) => s.db.reasons);
-  const flows = useApp((s) => s.db.flows);
-  const slotContext = useApp((s) => s.slotContext);
+  const clinic = useClinicBundle().data?.clinic;
+  const providers = useClinicConfig().config.providers;
   const today = clinic ? dayKey(nowInZone(clinic.timeZone)) : dayKey(new Date());
   const [day, setDay] = useState(initialDate && initialDate >= today ? initialDate : today);
-
-  const slots = useMemo(() => {
-    if (!reasonId) return [];
-    const pid = providerId && providerId !== "any" ? providerId : undefined;
-    const ctx = slotContext(clinicId, reasonId, { staffOverride: true, ignoreAppointmentId, providerId: pid });
-    if (!ctx) return [];
-    const all = getSlotsForDay(fromDayKey(day), ctx);
-    return pid ? all : firstAvailable(all);
-    // appointments/holds/providers/reasons/flows are deps so the list refreshes after store changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clinicId, reasonId, providerId, ignoreAppointmentId, day, appointments, holds, providers, reasons, flows, slotContext]);
+  const pid = providerId && providerId !== "any" ? providerId : undefined;
+  const slotsQuery = useStaffSlots({ reasonId, date: day, providerId: pid, ignoreAppointmentId });
+  const slots = slotsQuery.data ?? [];
 
   const groups = groupByDayPart(slots);
   const shift = (n: number) => {
@@ -93,6 +82,10 @@ export function SlotPicker({
       </div>
       {!reasonId ? (
         <p className="text-sm text-muted-foreground">Choose a reason first.</p>
+      ) : slotsQuery.isLoading ? (
+        <LoadingState label="Loading times…" className="p-0" />
+      ) : slotsQuery.isError ? (
+        <p className="rounded-md bg-red-50 px-3 py-4 text-center text-sm text-red-900">Couldn&apos;t load times. Try again.</p>
       ) : slots.length === 0 ? (
         <p className="rounded-md bg-muted px-3 py-4 text-center text-sm text-muted-foreground">No open times on this day. Try another date.</p>
       ) : (

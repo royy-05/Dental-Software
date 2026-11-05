@@ -5,10 +5,10 @@ import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import { ArrowLeft, CalendarCheck, Info, PauseCircle, Wrench } from "lucide-react";
 import type { Appointment, BuiltInFieldKey, FlowConfig, PatientType, Provider, Reason, StepKey, WidgetTheme } from "@/types";
-import { useApp, type NewAppointmentInput } from "@/store/app";
 import { bookableReasons, stepSequence, stepConfig, type FlowAnswers } from "@/lib/flow";
-import { featureEnabled } from "@/lib/permissions";
-import { availableDays, firstAvailable, getSlotsForDay, isSlotAvailable, type Slot, type SlotContext } from "@/lib/slots";
+import { publicApi, type PublicBundle } from "@/lib/api/public";
+import { ApiClientError } from "@/lib/api/client";
+import { SLOT_HOLD_MINUTES, type Slot } from "@/lib/slots";
 import { nowInZone, toWall, tzAbbrev } from "@/lib/time";
 import { cn, uid } from "@/lib/utils";
 import { BrandButton, WidgetUiProvider } from "./brand";
@@ -17,14 +17,18 @@ import { DateTimePicker } from "./date-time-picker";
 import { DetailsStep, type FileMap } from "./details-step";
 import { K, insQuestionKey, type DetailValues } from "./details-validation";
 import { BookingSummary, ProviderStep, ReasonStep } from "./steps";
-import { trackWidget } from "./tracking";
+import { createTracker, type WidgetTracker } from "./tracking";
+import { useAvailabilitySource } from "./availability";
 import type { Attribution } from "./attribution";
 
 export interface BookingWidgetProps {
-  clinicId: string;
-  /** Builder preview passes the draft flow. Live mode uses the clinic's published flow. */
+  /** Public booking bundle (GET /api/public/clinics/:slug), or one built by preview-bundle.ts in the builder. */
+  bundle: PublicBundle;
+  slug: string;
+  /** Builder preview passes the draft flow. Live mode uses the bundle's published flow. */
   flowOverride?: FlowConfig;
   themeOverride?: WidgetTheme;
+  /** live: real holds, bookings and analytics. preview: nothing leaves the browser. */
   mode: "live" | "preview";
   embedded?: boolean;
   /** Force the phone layout (builder mobile preview). */
@@ -37,23 +41,12 @@ interface HoldState {
   expiresAt: number;
 }
 
-export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, embedded, forceMobile = false, attribution }: BookingWidgetProps) {
+export function BookingWidget({ bundle, slug, flowOverride, themeOverride, mode, embedded, forceMobile = false, attribution }: BookingWidgetProps) {
   const live = mode === "live";
   const router = useRouter();
-  const clinic = useApp((s) => s.db.clinics.find((c) => c.id === clinicId));
-  const flows = useApp((s) => s.db.flows);
-  const allReasons = useApp((s) => s.db.reasons);
-  const allProviders = useApp((s) => s.db.providers);
-  const appointments = useApp((s) => s.db.appointments);
-  const holds = useApp((s) => s.db.holds);
-  const allInsurances = useApp((s) => s.db.clinicInsurances);
-  const plans = useApp((s) => s.db.plans);
-  const platform = useApp((s) => s.db.platform);
-  const holdSlot = useApp((s) => s.holdSlot);
-  const releaseHold = useApp((s) => s.releaseHold);
-  const createAppointment = useApp((s) => s.createAppointment);
-
-  const flow = flowOverride ?? flows.find((f) => f.clinicId === clinicId)?.published;
+  const { clinic, platform } = bundle;
+  const clinicId = clinic.id;
+  const flow = flowOverride ?? bundle.flow;
   const [sessionId] = useState(() => uid("ws"));
   const source = attribution?.source ?? "direct";
 
@@ -74,10 +67,12 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
   const [previewDone, setPreviewDone] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const prevStepKey = useRef<StepKey | undefined>(undefined);
+  const holdRef = useRef<HoldState | undefined>(undefined);
+  holdRef.current = hold;
 
-  const reasons = useMemo(() => allReasons.filter((r) => r.clinicId === clinicId), [allReasons, clinicId]);
-  const providers = useMemo(() => allProviders.filter((p) => p.clinicId === clinicId), [allProviders, clinicId]);
-  const insurances = useMemo(() => allInsurances.filter((i) => i.clinicId === clinicId).sort((a, b) => a.name.localeCompare(b.name)), [allInsurances, clinicId]);
+  const reasons = bundle.reasons;
+  const providers = bundle.providers;
+  const insurances = useMemo(() => [...bundle.insurances].sort((a, b) => a.name.localeCompare(b.name)), [bundle.insurances]);
   const bookable = useMemo(() => bookableReasons(reasons, providers), [reasons, providers]);
   const reason = reasons.find((r) => r.id === reasonId);
   const chosenProvider = providerChoice && providerChoice !== "any" ? providers.find((p) => p.id === providerChoice) : undefined;
@@ -89,9 +84,9 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
     bookingForSomeoneElse: !!values[K.someoneElse],
     answers: values,
   };
-  const steps = flow ? stepSequence(flow, answers) : [];
+  const steps = stepSequence(flow, answers);
   const step = steps[Math.min(stepIdx, steps.length - 1)];
-  const order = flow?.order ?? "reason_first";
+  const order = flow.order;
 
   // Tick for the hold countdown.
   useEffect(() => {
@@ -100,93 +95,56 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
     return () => clearInterval(t);
   }, [hold]);
 
-  // Analytics: widget opened + step viewed (live only, no PHI).
-  const hasClinic = !!clinic;
+  // Analytics: batched funnel events (live only, no PHI).
+  const tracker = useRef<WidgetTracker | null>(null);
   useEffect(() => {
-    if (!live || !hasClinic) return;
-    trackWidget({ clinicId, sessionId, name: "widget_opened", step: "reason", source });
-  }, [live, hasClinic, clinicId, sessionId, source]);
+    if (!live) return;
+    const t = createTracker(slug, sessionId, clinicId);
+    tracker.current = t;
+    t.track({ name: "widget_opened", step: "reason", source });
+    return () => {
+      tracker.current = null;
+      t.dispose();
+    };
+  }, [live, slug, sessionId, clinicId, source]);
+  const track = useCallback((e: Parameters<WidgetTracker["track"]>[0]) => tracker.current?.track(e), []);
   useEffect(() => {
     if (!step) return;
-    if (live) trackWidget({ clinicId, sessionId, name: "step_viewed", step: step.key, reasonId, source });
+    track({ name: "step_viewed", step: step.key, reasonId, source });
     // Move focus to the new step heading (not on first render; strict-mode safe).
     if (prevStepKey.current && prevStepKey.current !== step.key) headingRef.current?.focus();
     prevStepKey.current = step.key;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step?.key]);
 
-  // Release the hold when leaving the widget.
+  // Release the hold on the server when leaving the widget.
   useEffect(() => {
     return () => {
-      if (hold?.id) useApp.getState().releaseHold(hold.id);
+      const h = holdRef.current;
+      if (live && h?.id) publicApi.releaseHold(slug, { holdId: h.id, sessionId }).catch(() => undefined);
     };
-  }, [hold?.id]);
+  }, [live, slug, sessionId]);
 
-  // ---------- slots ----------
-  const ctxFor = useCallback(
-    (rid: string, providerId?: string): SlotContext | null => {
-      if (!flow) return null;
-      return useApp.getState().slotContext(clinicId, rid, { rules: flow.rules, sessionId, providerId });
-    },
-    // appointments/holds included so availability refreshes when data changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clinicId, flow, sessionId, appointments, holds],
-  );
-
-  const providerFilter = chosenProvider?.id;
+  // ---------- slots (server in live mode, local engine in preview) ----------
   const reasonsForDateFirst = useMemo(() => bookable.filter((r) => !patientType || r.patientType === "both" || r.patientType === patientType), [bookable, patientType]);
+  const dateFirstIds = useMemo(() => reasonsForDateFirst.map((r) => r.id), [reasonsForDateFirst]);
+  const source$ = useAvailabilitySource({ live, slug, bundle, flow, sessionId, reasonIds: dateFirstIds });
+  const providerFilter = chosenProvider?.id;
 
-  const slotsFor = useCallback(
-    (day: Date): Slot[] => {
-      if (reasonId) {
-        const c = ctxFor(reasonId, providerFilter);
-        return c ? firstAvailable(getSlotsForDay(day, c)) : [];
-      }
-      // date-first: union of every bookable reason
-      const all: Slot[] = [];
-      for (const r of reasonsForDateFirst) {
-        const c = ctxFor(r.id, providerFilter);
-        if (c) all.push(...getSlotsForDay(day, c));
-      }
-      return firstAvailable(all.sort((a, b) => a.start.getTime() - b.start.getTime()));
-    },
-    [ctxFor, reasonId, providerFilter, reasonsForDateFirst],
-  );
-
-  const availability = useCallback(
-    (from: Date, days: number): Record<string, number> => {
-      if (reasonId) {
-        const c = ctxFor(reasonId, providerFilter);
-        return c ? availableDays(from, days, c) : {};
-      }
-      const out: Record<string, number> = {};
-      for (const r of reasonsForDateFirst) {
-        const c = ctxFor(r.id, providerFilter);
-        if (!c) continue;
-        const m = availableDays(from, days, c);
-        for (const [k, v] of Object.entries(m)) out[k] = (out[k] ?? 0) + v;
-      }
-      return out;
-    },
-    [ctxFor, reasonId, providerFilter, reasonsForDateFirst],
-  );
+  const slotsFor = useCallback((day: Date): Slot[] => source$.slotsFor(reasonId, providerFilter, day), [source$, reasonId, providerFilter]);
+  const availability = useCallback((from: Date, days: number): Record<string, number> => source$.availability(reasonId, providerFilter, from, days), [source$, reasonId, providerFilter]);
 
   /** For date-first flows: which slot (provider/room) serves this reason at the pending time. */
   const resolveSlot = useCallback(
-    (rid: string, start: Date, providerId?: string): Slot | undefined => {
-      const c = ctxFor(rid, providerId);
-      if (!c) return undefined;
-      return getSlotsForDay(start, c).find((s) => s.start.getTime() === start.getTime());
-    },
-    [ctxFor],
+    (rid: string, start: Date, providerId?: string): Slot | undefined => source$.slotsFor(rid, providerId, start).find((s) => s.start.getTime() === start.getTime()),
+    [source$],
   );
 
   // ---------- gating ----------
-  if (!clinic || !flow) return <p className="p-6 text-sm">This booking page is not available.</p>;
   const theme = themeOverride ?? clinic.branding.theme;
   const ui = { branding: clinic.branding, theme, mobile: forceMobile };
-  const fileUploadsOn = featureEnabled(clinic, plans, "file_uploads") && flow.fileUploadEnabled;
-  const otpOn = featureEnabled(clinic, plans, "otp") && flow.otpEnabled;
+  const fileUploadsOn = bundle.features.file_uploads && flow.fileUploadEnabled;
+  const otpOn = bundle.features.otp && flow.otpEnabled;
   const now = nowInZone(clinic.timeZone);
   const tzLabel = tzAbbrev(clinic.timeZone);
 
@@ -205,16 +163,36 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
   const back = () => setStepIdx((i) => Math.max(0, i - 1));
   const isLast = stepIdx >= steps.length - 1;
 
-  const placeHold = (s: Slot) => {
-    if (hold?.id) releaseHold(hold.id);
-    if (live) {
-      const h = holdSlot(clinicId, s, sessionId);
+  const releaseCurrent = () => {
+    const h = holdRef.current;
+    if (live && h?.id) publicApi.releaseHold(slug, { holdId: h.id, sessionId }).catch(() => undefined);
+  };
+
+  /** Hold the slot on the server (5 minutes). In preview mode only the countdown runs. */
+  const placeHold = async (s: Slot, rid: string) => {
+    releaseCurrent();
+    if (!live) {
+      setHold({ expiresAt: Date.now() + SLOT_HOLD_MINUTES * 60000 });
+      setNowMs(Date.now());
+      return true;
+    }
+    setHold({ expiresAt: Date.now() + SLOT_HOLD_MINUTES * 60000 });
+    try {
+      const h = await publicApi.hold(slug, { reasonId: rid, start: toWall(s.start), providerId: s.providerId, sessionId });
       setHold({ id: h.id, expiresAt: h.expiresAt });
-    } else setHold({ expiresAt: Date.now() + 5 * 60000 });
-    setNowMs(Date.now());
+      setNowMs(Date.now());
+      return true;
+    } catch (e) {
+      setHold(undefined);
+      setSlot(undefined);
+      source$.reset();
+      setError(e instanceof ApiClientError && e.code === "slot_taken" ? "Sorry, that time was just taken. Please choose another time." : "Couldn't reserve that time. Please try again.");
+      go("datetime");
+      return false;
+    }
   };
   const clearSlot = () => {
-    if (hold?.id) releaseHold(hold.id);
+    releaseCurrent();
     setHold(undefined);
     setSlot(undefined);
   };
@@ -222,13 +200,13 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
   const onReason = (r: Reason, t: PatientType) => {
     setPatientType(t);
     setReasonId(r.id);
-    if (live) trackWidget({ clinicId, sessionId, name: "reason_selected", step: "reason", reasonId: r.id, source });
+    track({ name: "reason_selected", step: "reason", reasonId: r.id, source });
     if (order === "date_first" && pendingStart) {
       const pid = chosenProvider?.id;
       const s = resolveSlot(r.id, pendingStart, pid);
       if (s) {
         setSlot(s);
-        placeHold(s);
+        void placeHold(s, r.id);
       } else clearSlot();
     } else if (slot && slot.end.getTime() - slot.start.getTime() !== r.duration * 60000) clearSlot();
     else if (slot && reasonId !== r.id) clearSlot();
@@ -237,19 +215,20 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
 
   const onProvider = (id: string) => {
     setProviderChoice(id);
-    if (live) trackWidget({ clinicId, sessionId, name: "provider_selected", step: "provider", reasonId, source });
+    track({ name: "provider_selected", step: "provider", reasonId, source });
     if (order === "date_first" && pendingStart && reasonId) {
       const s = resolveSlot(reasonId, pendingStart, id === "any" ? undefined : id);
       if (s) {
         setSlot(s);
-        placeHold(s);
+        void placeHold(s, reasonId);
       }
     } else if (slot && id !== "any" && slot.providerId !== id) clearSlot();
     next();
   };
 
   const onSlot = (s: Slot) => {
-    if (live) trackWidget({ clinicId, sessionId, name: "slot_selected", step: "datetime", reasonId, source });
+    track({ name: "slot_selected", step: "datetime", reasonId, source });
+    setError(null);
     if (!reasonId) {
       // date-first: remember the time; the reason step resolves the exact provider/room.
       setPendingStart(s.start);
@@ -257,26 +236,21 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
     } else {
       setPendingStart(s.start);
       setSlot(s);
-      placeHold(s);
+      void placeHold(s, reasonId);
     }
     next();
   };
 
   const secondsLeft = hold ? Math.max(0, Math.round((hold.expiresAt - nowMs) / 1000)) : 0;
   const holdExpired = !!hold && secondsLeft === 0;
-  const recheckHold = () => {
+  const recheckHold = async () => {
     if (!slot || !reasonId) return;
-    const c = ctxFor(reasonId, slot.providerId);
-    const still = c && isSlotAvailable(slot, c);
-    if (still) placeHold(still);
-    else {
-      clearSlot();
-      setError("Sorry, that time was just taken. Please choose another time.");
-      go("datetime");
-    }
+    source$.reset();
+    if (!(await placeHold(slot, reasonId))) return;
+    setError(null);
   };
 
-  const book = (vals: DetailValues, fileMap: FileMap) => {
+  const book = async (vals: DetailValues, fileMap: FileMap) => {
     setError(null);
     if (!slot || !reason || !patientType) {
       setError("Please choose a reason and a time first.");
@@ -303,15 +277,12 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
       const a = String(vals[insQuestionKey(i)] ?? "").trim();
       if (a) extra[q] = a;
     });
-    const input: NewAppointmentInput = {
-      clinicId,
-      start: toWall(slot.start),
-      end: toWall(slot.end),
+    const body = {
       reasonId: reason.id,
       providerId: slot.providerId,
-      operatoryId: slot.operatoryId,
+      start: toWall(slot.start),
       patientType,
-      patient: { firstName: get("firstName"), lastName: get("lastName"), dob: get("dob"), phone: get("phone"), email: get("email"), message: get("message") },
+      patient: { firstName: get("firstName"), lastName: get("lastName"), dob: get("dob"), phone: get("phone"), email: get("email"), message: get("message") || undefined },
       bookingForSomeoneElse: !!vals[K.someoneElse],
       bookerName: vals[K.someoneElse] ? String(vals[K.bookerName] ?? "") : undefined,
       insurance: hasIns
@@ -327,40 +298,44 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
         : { hasInsurance: false },
       answers: custom,
       files: Object.values(fileMap),
-      source,
+      smsConsent: !!vals[K.smsConsent],
+      holdId: hold?.id,
+      sessionId,
       referrerId: attribution?.referrerId,
       utm: attribution?.utm ?? {},
       gclid: attribution?.gclid,
       fbclid: attribution?.fbclid,
-      smsConsent: vals[K.smsConsent]
-        ? { given: true, at: new Date().toISOString(), termsVersion: clinic.settings.legal.termsVersion, ip: "198.51.100.77 (demo)" }
-        : { given: false },
-      bookedBy: "patient",
-      holdId: hold?.id,
-      sessionId,
+      website: "", // honeypot
     };
-    const res = createAppointment(input, vals[K.someoneElse] ? "Patient (online, booked by someone else)" : "Patient (online)");
-    setSubmitting(false);
-    if (!res.ok) {
-      setError(res.error);
-      clearSlot();
-      go("datetime");
-      return;
+    try {
+      const res = await publicApi.book(slug, body);
+      setSubmitting(false);
+      setHold(undefined);
+      track({ name: "booking_completed", step: "review", reasonId: reason.id, source });
+      const q = new URLSearchParams();
+      if (embedded) q.set("embed", "1");
+      if (attribution?.referrerId) q.set("referrer_id", attribution.referrerId);
+      const qs = q.toString();
+      router.push(`/book/${slug}/confirmed/${res.token}${qs ? `?${qs}` : ""}`);
+    } catch (e) {
+      setSubmitting(false);
+      const msg = e instanceof ApiClientError ? e.message : "Something went wrong. Please try again.";
+      setError(msg);
+      if (e instanceof ApiClientError && (e.code === "slot_taken" || e.code === "not_accepting" || e.code === "clinic_unavailable")) {
+        source$.reset();
+        clearSlot();
+        go("datetime");
+      } else if (e instanceof ApiClientError && e.status === 400) {
+        go("details");
+      }
     }
-    setHold(undefined);
-    trackWidget({ clinicId, sessionId, name: "booking_completed", step: "review", reasonId: reason.id, source });
-    const q = new URLSearchParams();
-    if (embedded) q.set("embed", "1");
-    if (attribution?.referrerId) q.set("referrer_id", attribution.referrerId);
-    const qs = q.toString();
-    router.push(`/book/${clinic.slug}/confirmed/${res.appointment.token}${qs ? `?${qs}` : ""}`);
   };
 
   const onDetails = (vals: DetailValues, fileMap: FileMap) => {
     setValues(vals);
     setFiles(fileMap);
-    if (live) trackWidget({ clinicId, sessionId, name: "details_submitted", step: "details", reasonId, source });
-    if (isLast) book(vals, fileMap);
+    track({ name: "details_submitted", step: "details", reasonId, source });
+    if (isLast) void book(vals, fileMap);
     else next();
   };
 
@@ -408,6 +383,7 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
         slotsFor={slotsFor}
         selectedStart={slot?.start ?? pendingStart}
         onSelect={onSlot}
+        loading={source$.loading}
       />
     );
   else if (step?.key === "details")
@@ -510,7 +486,7 @@ export function BookingWidget({ clinicId, flowOverride, themeOverride, mode, emb
         <main id={mode === "live" ? "main" : undefined} className={cn("mx-auto w-full flex-1 px-4", width, theme === "compact" ? "py-5" : "py-8")}>
           <div className={cn(theme !== "full_page" && "rounded-xl border bg-white p-4 shadow-sm", theme !== "full_page" && !forceMobile && "sm:p-6")}>{content}</div>
         </main>
-        <WidgetFooter clinic={clinic} poweredBy={platform.branding.poweredByText} termsUrl={flow.messages.termsUrl || undefined} privacyUrl={flow.messages.privacyUrl || undefined} />
+        <WidgetFooter clinic={clinic} poweredBy={platform.poweredByText} termsUrl={flow.messages.termsUrl || undefined} privacyUrl={flow.messages.privacyUrl || undefined} />
       </div>
     </WidgetUiProvider>
   );

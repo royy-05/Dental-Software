@@ -1,92 +1,82 @@
 # Phase 2A status
 
-Branch: `build/phase2a`. Work stopped on request. The branch is a work in progress: the panels are only partly moved off the Phase 1 localStorage store, so the app as a whole does not work end to end yet.
+Branch: `build/phase2a`. Phase 2A turns the Phase 1 clickable prototype into a working application: Postgres with row-level security, real logins, a server-side booking engine, an API for every module, a message queue with a worker, SQL reports, and the three panels reading and writing through that API. The browser `localStorage` store is gone.
+
+See [`api.md`](api.md) (generated, 146 endpoints), [`assumptions.md`](assumptions.md) and the README for setup.
 
 ## Done
 
-### Step 1: database (commit 52ff0ae)
-- Prisma schema for every entity in `src/types` (`prisma/schema.prisma`).
-- Migrations:
-  - `init`
-  - `rls`: row-level security on every clinic table, scoped per transaction by `app.scope` and `app.clinic_id`. Uses FORCE RLS and the `kivi_app` runtime role, which has NOBYPASSRLS.
-  - The audit log is append-only.
-  - Gist exclusion constraints stop provider and operatory double booking.
-  - `clinic_id_for_slug()` is a security-definer function for public lookups.
-- `src/server/db.ts`: `withTenant`, `withPlatform` and `clinicIdForSlug`.
-- `src/server/mappers.ts`: maps database rows to the domain types.
-- `src/server/seed.ts` and `prisma/seed.ts` load the demo data from `src/mock` (5 clinics, 11 users, 1,093 appointments, all fake).
-- `src/server/rls.int.test.ts`: 12 isolation tests (no scope gives no rows, no reading, updating or inserting across clinics, the scope does not leak between queries, and global templates are read-only for tenants).
-- `docker-compose.yml`, `docker/postgres-init.sh` and `.env.example`.
+### Step 1: database
+- Prisma schema for every entity (`prisma/schema.prisma`), migrations `init` and `rls`.
+- Row-level security on every clinic table, scoped per transaction (`app.scope`, `app.clinic_id`), FORCE RLS, runtime role `kivi_app` with NOBYPASSRLS; append-only audit log; gist exclusion constraints against provider and operatory double booking; `clinic_id_for_slug()` security-definer lookup.
+- `src/server/db.ts` (`withTenant`, `withPlatform`), mappers, seed from the Phase 1 demo data (5 clinics, 11 users, 1,093 appointments), 12 RLS isolation tests.
 
 ### Step 2: auth and permissions
-- Passwords:
-  - argon2id hashing.
-  - Rules: 12+ characters, 3 character classes, no common passwords, no email name (`src/server/auth/password.ts`).
-- 2FA:
-  - TOTP built on node:crypto, tested against the RFC test vectors (`totp.ts`).
-  - Secrets are encrypted at rest with AES-256-GCM (`crypto.ts`).
-- Sign-in (`src/server/auth/login.ts`):
-  - Login with rate limits per email and per IP.
-  - The account locks after 10 failures.
-  - Successes and failures are written to the audit log.
-- Sessions:
-  - Each session has a database row, with a 30-minute idle timeout, a 12-hour maximum and revocation (`context.ts`).
-  - Background polls do not count as activity.
-- Invites, password reset, password change, and 2FA setup and disable (`accounts.ts`).
-- Auth.js:
-  - Credentials provider (`src/auth.ts`) and edge config (`src/auth.config.ts`).
-  - `src/middleware.ts` guards pages and adds security headers.
-- `src/server/http.ts` `handler()`: every route runs authenticate, then authorize (the role matrix from `src/lib/permissions.ts`, checked on the server, plus feature flags), then validate (zod), then act.
-- Rate limiter stored in Postgres (`rate-limit.ts`). Audit helper (`audit.ts`). Logger that redacts PHI fields (`log.ts`).
-- Impersonation API: a reason of at least 5 characters is required, it is audited, and access is limited to the impersonated clinic.
-- Email adapter: Resend, console and memory drivers. SMS adapter: mock driver, with Twilio and MSG91 as stubs.
-- Pages:
-  - Real `/login`. The demo account panel appears only when `DEMO_MODE=true`.
-  - `/forgot-password`, `/reset-password/[token]`, `/invite/[token]` and `/account/security`.
-- Tests: `src/server/auth/auth.int.test.ts` and `totp.test.ts`.
+- Argon2id passwords with strength rules; TOTP 2FA (secrets AES-256-GCM at rest); login rate limits per email and IP; lockout after 10 failures; audited logins.
+- Server-side sessions behind Auth.js JWTs: 30-minute idle timeout, 12-hour maximum, revocation; background polls do not count as activity. Client-side idle timer signs the browser out at 30 minutes too.
+- Invites (7-day links), password reset (1-hour, single use, revokes sessions), password change, 2FA setup/disable; platform users must enrol in 2FA at first login.
+- `handler()` in `src/server/http.ts`: every route runs authenticate → authorize (role matrix from `src/lib/permissions.ts` plus feature flags) → zod validate → act. Support agents reach clinics only through audited impersonation.
+- Staff management: clinic owners/managers invite staff, change roles, deactivate (sessions revoked); super admins invite platform users, force 2FA, deactivate, send resets.
+- Real `/login` with the demo account panel when `DEMO_MODE=true`; `/forgot-password`, `/reset-password/[token]`, `/invite/[token]`, `/account/security`.
 
-## In progress (step 3: API layer and UI migration)
-- Done so far:
-  - `src/lib/api/client.ts`: fetch wrapper. A 401 sends the user to `/login`; a missing 2FA setup sends them to `/account/security`.
-  - `src/lib/api/session.ts`: `useMe`, `useClinicId`, `useEffectiveRole`, `useCurrentClinic`, `useFeature` and `useApiMutation`.
-  - `src/store/ui.ts`: Zustand now holds UI state only (selected clinic, Hide PHI).
-  - `src/lib/schemas.ts`: zod schemas for all domain types.
-  - Endpoints:
-    - `GET /api/me`
-    - `GET /api/clinics/[clinicId]`
-    - `PATCH /api/clinics/[clinicId]/profile`
-    - notifications (GET and mark read)
-    - announcements
-    - `GET /api/catalog/plans`
-  - Migrated to the API: the clinic shell (nav, clinic selector, bell, banners, sign-out), the guards and the PHI mask.
-- Remaining:
-  - About 50 components still read and write the legacy `useApp` store in `src/store/app.ts`, which still builds the demo data in the browser:
-    - every clinic module except the shell
-    - the whole super admin panel
-    - the booking widget
-  - The central hooks `useClinicData`, `useClinicConfig` and `useSaveClinic` have not been moved yet.
-  - The admin shell (`src/components/admin/shell.tsx`) still uses the legacy store.
+### Step 3: API layer and UI migration
+- Clinic routes under `/api/clinics/:clinicId/...` for every module: configuration bundle, reasons (CRUD, reorder, duplicate), providers, operatories, schedule (hours, holidays, blockouts), insurances and insurance settings, referrers, templates (clinic copies of the global defaults, reset, real test send), booking flow (draft, publish, roll back, starter templates), users, tickets, ad spend, delivery log, opt-outs, SMS simulator (DEMO_MODE), appointments (list, detail with PHI-access audit, status changes, notes, reschedule, resend, CSV export that masks PHI on request), staff slots, patient export and delete.
+- Super admin routes under `/api/admin/...`: dashboard, clinics (wizard with CSV import, edit, soft delete and 30-day restore, clone settings, impersonation), groups, plans, invoices and dunning, coupons, users, libraries (carriers, default templates, starter flows, legal), messaging logs and opt-outs, support desk and announcements, platform analytics, audit log, platform settings, demo reset.
+- Public routes under `/api/public/...` for the widget and patient pages (see step 4 and 5).
+- Clinic panel, super admin panel and patient widget read and write through the API (TanStack Query hooks in `src/lib/api/`). The Zustand store keeps UI state only (selected clinic, Hide PHI).
 
-## Not started
-- Step 4: server-side booking engine (holds and bookings under an advisory lock) and the 20-way concurrency test.
-- Step 5: signed, expiring confirm, reschedule and cancel links; capturing referrer, UTM and click IDs onto the appointment on the server; storing the consent record; honeypot and rate limits on the public endpoints.
-- Step 6: pg-boss queue and worker. `scripts/setup-jobs.ts` does not exist yet, so `npm run db:setup` and `npm run worker` will fail. Also not started: reminders, quiet hours, two-way SMS webhook, delivery log written by the worker.
-- Step 7: patient export and delete endpoints, the retention setting UI and the purge job (`retentionDays` exists in the schema only).
-- Step 8: SQL report aggregations and the parity tests.
-- Step 9: Playwright tests, GitHub Actions CI, `docs/api.md` generator, README and `docs/assumptions.md` updates, PR.
+### Step 4: booking engine
+- `src/server/services/booking.ts`: holds, bookings, staff bookings, reschedules and status changes run inside one transaction under a per-clinic advisory lock; the slot is re-validated after the lock with the same pure slot engine the widget preview uses (`src/lib/slots.ts`). The exclusion constraints are the backstop.
+- 5-minute holds (`slot_holds`), one per widget session, invisible to other sessions, purged hourly.
+- Test: 20 concurrent bookings for one slot produce exactly one appointment and 19 `slot_taken` errors (`booking.int.test.ts`).
+- Patients are upserted per clinic (email or phone + last name + date of birth) and un-archived on booking when the setting is on.
 
-## Known failing checks
-- `npm run lint` fails with 1 error: `@typescript-eslint/no-explicit-any` in `src/test/route.ts` (the `json: any` return type of `call()`).
-- `npm run typecheck`: passed at the last run.
-- `npm test`: 17 files and 120 tests passed at the last run. This needs local Postgres with `TEST_DATABASE_URL` and `TEST_DIRECT_DATABASE_URL` set (see `.env.example`).
-- Panels still on the legacy store, end-to-end flows, `npm run db:setup` and `npm run worker` will fail until step 3 is finished and step 6 is built.
+### Step 5: patient links, tracking, consent, abuse protection
+- Signed, expiring confirm/reschedule/cancel links (`src/server/links.ts`): HMAC over appointment id, version and expiry; the version is bumped on reschedule and cancel so links in older messages stop working; links expire 7 days after the visit.
+- Patient reschedule and cancel respect the clinic's cancellation window (409 `outside_window`).
+- Source, referrer id, UTM tags and click ids are stored on the appointment; the SMS consent record stores the Terms version, timestamp, IP and user agent.
+- Public booking: per-IP rate limits, honeypot field, server-side slot re-check; widget funnel events are recorded server-side (ids and step names only).
 
-## Local setup (as it stands)
+### Step 6: notifications
+- The booking transaction writes delivery-log rows (`queued`, `scheduled` for reminders and quiet hours, `failed` for opt-outs) from the same pure rules as the Phase 1 simulator (`src/lib/notify.ts`).
+- pg-boss queue (`send-message`, `hourly-tick`) and worker (`npm run worker`): email via Resend/console/memory adapters, SMS via the mock adapter (Twilio and MSG91 are stubs that fail loudly); retries; a safety sweep delivers rows whose job was lost; stale reminders and confirmation prompts are skipped when the appointment moved or ended.
+- Quiet hours (no patient SMS 9 pm - 8 am clinic time), reminders at the clinic's offsets, re-issued on reschedule, daily summary of tomorrow's schedule at 17:00 clinic time, resend confirmation and confirmation requests from the drawer, template test sends, dunning emails.
+- Two-way SMS: `POST /api/webhooks/sms` (shared secret) and the in-panel simulator share one handler: C confirms the next appointment, STOP/START opt out and in, HELP answers.
+- `smsCreditsUsed` and `emailsSent` are counted on delivery.
+
+### Step 7: patient rights and retention
+- `GET/DELETE /api/clinics/:id/patients/:patientId` export or delete everything about a patient (audited).
+- Retention purge in the hourly tick: patients past the clinic's `retentionDays` (or the platform default) with no newer appointment are deleted and the purge is audited.
+
+### Step 8: reports in SQL
+- Home, Performance (overview, by source, ad ROI, patients, reasons, providers, lead time, fill rate) and Form Analytics (totals, drop-off by step and reason, heatmaps) are computed in Postgres (`src/server/services/reports.ts`). Parity tests compare every figure with the Phase 1 aggregators over the seeded data.
+- Super admin dashboard and platform analytics (compare clinics, growth, retention) in SQL.
+
+### Step 9: tests, CI, docs
+- Vitest: unit tests (slot engine, flow rules, notifications, links, TOTP) and integration tests against a seeded Postgres (RLS, auth, booking, routes, reports, jobs).
+- Playwright end-to-end (`e2e/`): login and roles, patient booking end to end, held slots, signed-link cancel, staff confirmation, admin pages.
+- GitHub Actions (`.github/workflows/ci.yml`): lint, typecheck, unit and integration tests, build, Playwright.
+- `docs/api.md` is generated from the route specs (`npm run docs:api`).
+
+## Stubbed or simulated
+- SMS provider: mock driver only; Twilio/MSG91 adapters are stubs (the provider is an open question in the SOW). The inbound webhook accepts a provider-agnostic payload.
+- Email: Resend adapter is implemented but not exercised in CI (memory/console drivers there). Delivery/open tracking webhooks are not wired.
+- File uploads: only the file name and size are stored (no object storage).
+- OTP on the widget: code shown in a toast, nothing sent.
+- Reserve with Google, PMS sync, Stripe, calendar sync, custom domains, backups: status fields and simulated actions only, as in Phase 1.
+- Super admin "custom roles" (section 2) are not built; the six fixed roles are enforced.
+
+## Local setup
 ```bash
 docker compose up -d
 cp .env.example .env   # then fill in AUTH_SECRET, APP_ENCRYPTION_KEY and LINK_SIGNING_SECRET
-npx dotenv -- prisma migrate deploy
-npm run db:seed
-npm run dev
+npm install
+npm run db:setup       # migrate, create the job queue, seed demo data
+npm run dev            # app on http://localhost:3000
+npm run worker         # in another terminal: delivers queued email/SMS, hourly tick
 ```
-Demo accounts: every seeded user, with password `Demo-Passw0rd-2026`. Accounts with 2FA use the demo secret `KIVIDEMOKIVIDEMOKIVIDEMOKIVIDEMO`. These are for development only.
+Demo accounts: every seeded user, password `Demo-Passw0rd-2026`; accounts with 2FA use the demo secret `KIVIDEMOKIVIDEMOKIVIDEMOKIVIDEMO` (the login page shows the current code while `DEMO_MODE=true`). Development only.
+
+## Checks
+- `npm run check`: lint, typecheck, vitest (needs `TEST_DATABASE_URL` and `TEST_DIRECT_DATABASE_URL`).
+- `npm run test:e2e`: Playwright against a running app with the seeded dev database.

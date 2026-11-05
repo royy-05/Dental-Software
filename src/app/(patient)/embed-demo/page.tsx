@@ -4,13 +4,16 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { CalendarCheck, Check, Copy, X } from "lucide-react";
 import { toast } from "sonner";
-import { useApp } from "@/store/app";
-import { useHydrated } from "@/components/shared/hydration";
+import { usePublicClinic } from "@/lib/api/public";
 import { LoadingState } from "@/components/shared/states";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { embedSnippets } from "@/components/widget/embed-code";
 
-const DEMO_CLINICS = ["c_brightsmile", "c_motion", "c_clearskin"];
+const DEMO_CLINICS = [
+  { slug: "bright-smile-dental", name: "Bright Smile Dental" },
+  { slug: "motion-physio", name: "Motion Physio & Rehab" },
+  { slug: "clearskin-derm", name: "Clear Skin Dermatology" },
+];
 
 function CodeBlock({ code, label }: { code: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -40,15 +43,14 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
 }
 
 export default function EmbedDemoPage() {
-  const hydrated = useHydrated();
-  const clinics = useApp((s) => s.db.clinics);
-  const [clinicId, setClinicId] = useState(DEMO_CLINICS[0]);
+  const [slug, setSlug] = useState(DEMO_CLINICS[0].slug);
+  const bundle = usePublicClinic(slug);
   const [popup, setPopup] = useState(false);
   const [origin, setOrigin] = useState("https://book.kivihealth.example.com");
   useEffect(() => setOrigin(window.location.origin), []);
 
-  const clinic = clinics.find((c) => c.id === clinicId);
-  if (!hydrated || !clinic) return <LoadingState className="mx-auto max-w-xl pt-16" />;
+  const clinic = bundle.data?.clinic;
+  if (!clinic) return <LoadingState className="mx-auto max-w-xl pt-16" />;
   const snip = embedSnippets(clinic, origin);
   const src = `/book/${clinic.slug}?embed=1&referrer_id=4`;
   const color = clinic.branding.primaryColor;
@@ -66,8 +68,8 @@ export default function EmbedDemoPage() {
           </nav>
           <label className="ml-auto flex items-center gap-2 text-sm">
             <span className="text-muted-foreground">Demo clinic</span>
-            <select className="h-9 rounded-md border px-2" value={clinicId} onChange={(e) => setClinicId(e.target.value)}>
-              {DEMO_CLINICS.map((id) => <option key={id} value={id}>{clinics.find((c) => c.id === id)?.name}</option>)}
+            <select className="h-9 rounded-md border px-2" value={slug} onChange={(e) => setSlug(e.target.value)}>
+              {DEMO_CLINICS.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
             </select>
           </label>
         </div>

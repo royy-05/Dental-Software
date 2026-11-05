@@ -4,8 +4,8 @@ import { useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { CalendarDays, List } from "lucide-react";
 import { RequirePermission, useCan } from "@/components/shared/guards";
-import { useHydrated } from "@/components/shared/hydration";
 import { PageHeader } from "@/components/shared/page-header";
+import { ErrorState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppointmentsTable } from "@/components/appointments/table";
@@ -16,7 +16,7 @@ import { useClinicData } from "@/components/appointments/use-clinic-data";
 
 function AppointmentsPage() {
   const data = useClinicData();
-  const hydrated = useHydrated();
+  const loading = data.isLoading && data.appointments.length === 0;
   const can = useCan();
   const router = useRouter();
   const pathname = usePathname();
@@ -52,8 +52,10 @@ function AppointmentsPage() {
           </>
         }
       />
-      {mode === "calendar" ? (
-        <AppointmentsCalendar data={data} onOpen={setOpen} loading={!hydrated} />
+      {data.isError ? (
+        <ErrorState onRetry={() => data.refetch()} />
+      ) : mode === "calendar" ? (
+        <AppointmentsCalendar data={data} onOpen={setOpen} loading={loading} />
       ) : (
         <Tabs defaultValue="appointments">
           <TabsList>
@@ -61,10 +63,10 @@ function AppointmentsPage() {
             <TabsTrigger value="declined">Declined{declinedCount ? ` (${declinedCount})` : ""}</TabsTrigger>
           </TabsList>
           <TabsContent value="appointments">
-            <AppointmentsTable data={data} tab="appointments" onOpen={setOpen} loading={!hydrated} />
+            <AppointmentsTable data={data} tab="appointments" onOpen={setOpen} loading={loading} />
           </TabsContent>
           <TabsContent value="declined">
-            <AppointmentsTable data={data} tab="declined" onOpen={setOpen} loading={!hydrated} />
+            <AppointmentsTable data={data} tab="declined" onOpen={setOpen} loading={loading} />
           </TabsContent>
         </Tabs>
       )}

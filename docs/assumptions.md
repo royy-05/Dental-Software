@@ -69,3 +69,51 @@ Where the Scope of Work (docs/spec.txt) was ambiguous, the prototype uses these 
 - Rolling back publishes the old version as a new version number, so history is never lost.
 - `?theme=compact|full_page|reason_first` on the booking URL overrides the theme for demos, and `?embed=1` shows a compact header for iframe use.
 - In /embed-demo the iframe and the parent page each hold their own copy of the store in memory (shared localStorage). Reload the clinic panel after booking inside an iframe.
+
+## Phase 2A (production backend)
+
+### Branch and process
+- Work continues on `build/phase2a` as asked, with a commit and push after each finished step; the PR targets `main`.
+
+### Database and isolation
+- One Postgres database for all clinics with row-level security (not a schema per clinic). Every request runs in a transaction that sets `app.scope`/`app.clinic_id`; without a scope every clinic table returns no rows.
+- Appointment, blockout and hold times stay clinic wall-clock values (`timestamp` without time zone), matching the Phase 1 convention; instants (`created_at`, log times) are `timestamptz`. Report ranges are clinic-local days; instants are converted with the clinic's time zone.
+- Patients are matched within a clinic by last name + date of birth plus email or phone; a second booking by the same person updates that record.
+
+### Auth
+- Auth.js (credentials provider, JWT cookie) carries only a session id; the session row in Postgres is the source of truth (idle timeout, revocation). The browser also signs out after 30 idle minutes.
+- Support agents never get direct clinic access; they impersonate (reason logged) and act as a Clinic Manager. Super admins act as the Clinic Owner.
+- Deactivating a user revokes all of their sessions. Only a clinic owner can grant or remove the owner role.
+
+### Booking engine
+- Correctness under concurrency comes from a per-clinic transaction-scoped advisory lock plus re-validation; the gist exclusion constraints on provider and operatory are a last line of defence. Staff and patient bookings share one code path (staff ignore notice, window, cap and online visibility).
+- Holds belong to a widget session id generated in the browser; a session can hold one slot at a time; holds last 5 minutes and are swept hourly.
+- A cancelled or declined appointment cannot be re-confirmed; rescheduling it makes it unconfirmed again.
+- Deleting a reason or operatory is refused while it has upcoming appointments.
+
+### Patient links
+- Links are HMAC-signed tokens over (appointment id, version, expiry); no database row per token. Reschedule and cancel bump the version so earlier links stop working and the newest message always carries a working link. Links expire 7 days after the visit start.
+- Patient-initiated changes respect the cancellation window; staff changes do not.
+
+### Notifications
+- Delivery-log rows are written inside the booking transaction and delivered by the worker afterwards; a sweep every minute (and in the hourly tick) catches rows whose queue job was lost. Message bodies are rendered at queue time.
+- Reminders and confirmation prompts are skipped at send time if the appointment is no longer unconfirmed/confirmed. Rescheduling marks the old reminders `skipped` and queues new ones.
+- Quiet hours use the platform setting (21:00-08:00) in the clinic's time zone; patient local time is assumed to equal the clinic time zone.
+- The mock SMS driver marks messages delivered immediately; numbers ending in 0000 fail (for demos). Email is `sent` until a provider webhook exists.
+- The daily summary goes to the clinic alert email (and extra alert emails) at 17:00 clinic time, once per day.
+- Dunning emails and template test sends are logged as clinic-bound `test` events.
+
+### Reports
+- SQL reports return exactly the shapes of the Phase 1 aggregators so the report screens did not change; ties in "drop-off by reason" are broken by name so the order is deterministic.
+- Provider availability (hours ∩ clinic hours minus breaks, time off, holidays) is computed in code from the provider records; booked minutes come from SQL.
+
+### Retention and patient rights
+- The retention job deletes patients created before the cutoff who have no appointment on or after it; the deletion cascades to appointments, consents and messages and is audited with a system actor.
+- Patient export returns the patient, appointments, consents and messages as JSON; deletion is immediate and irreversible.
+
+### Queue and jobs
+- pg-boss lives in the `pgboss` schema, created once by `npm run db:setup` with the owner role; the app and worker connect as `kivi_app` with `migrate: false`.
+- The hourly tick is scheduled at minute 5 every hour and also runs on worker start.
+
+### Not built in Phase 2A
+- Twilio/MSG91 drivers, email delivery webhooks, object storage for uploads, OTP delivery, Reserve with Google, PMS, Stripe, calendar sync, custom domains, backups, custom roles.

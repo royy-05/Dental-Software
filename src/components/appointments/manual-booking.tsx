@@ -6,9 +6,11 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { PhoneCall } from "lucide-react";
-import { useApp, actorName } from "@/store/app";
+import type { Appointment } from "@/types";
 import type { Slot } from "@/lib/slots";
 import { toWall } from "@/lib/time";
+import { api, ApiClientError } from "@/lib/api/client";
+import { qk, useApiMutation, useClinicId } from "@/lib/api/session";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -67,7 +69,11 @@ export function ManualBookingDialog({ data, onBooked }: { data: ClinicData; onBo
   const [open, setOpen] = useState(false);
   const [slot, setSlot] = useState<Slot | null>(null);
   const [slotError, setSlotError] = useState<string | null>(null);
-  const createAppointment = useApp((s) => s.createAppointment);
+  const clinicId = useClinicId();
+  const create = useApiMutation((body: unknown) => api<Appointment>(`/api/clinics/${clinicId}/appointments`, { body }), {
+    invalidate: [qk.clinicRes(clinicId, "appointments"), qk.clinicRes(clinicId, "notifications"), qk.clinicRes(clinicId, "messages")],
+    errorToast: false,
+  });
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: DEFAULTS });
   const { register, watch, setValue, formState } = form;
   const errors = formState.errors;
@@ -77,21 +83,18 @@ export function ManualBookingDialog({ data, onBooked }: { data: ClinicData; onBo
   const reason = data.reasons.find((r) => r.id === reasonId);
   const reasonProviders = data.providers.filter((p) => p.active && reason?.providerIds.includes(p.id));
 
-  const onSubmit = (v: Values) => {
+  const onSubmit = async (v: Values) => {
     if (!data.clinic) return;
     if (!slot) {
       setSlotError("Pick a time");
       return;
     }
     const carrier = data.insurances.find((i) => i.name === v.carrierName);
-    const res = createAppointment(
-      {
-        clinicId: data.clinic.id,
-        start: toWall(slot.start),
-        end: toWall(slot.end),
+    try {
+      const appt = await create.mutateAsync({
         reasonId: v.reasonId,
         providerId: slot.providerId,
-        operatoryId: slot.operatoryId,
+        start: toWall(slot.start),
         patientType: v.patientType,
         patient: { firstName: v.firstName, lastName: v.lastName, dob: v.dob, phone: v.phone, email: v.email, message: v.message },
         bookingForSomeoneElse: false,
@@ -100,24 +103,20 @@ export function ManualBookingDialog({ data, onBooked }: { data: ClinicData; onBo
           : { hasInsurance: false },
         answers: {},
         files: [],
-        source: "staff",
-        utm: {},
-        smsConsent: v.smsConsent ? { given: true, at: new Date().toISOString(), termsVersion: data.clinic.settings.legal.termsVersion, ip: "staff-entered" } : { given: false },
-        bookedBy: "staff",
+        smsConsent: v.smsConsent,
         status: v.status,
-      },
-      actorName(),
-    );
-    if (!res.ok) {
-      setSlotError(res.error);
-      toast.error(res.error);
-      return;
+      });
+      toast.success("Appointment booked", { description: "Confirmation messages were queued for delivery." });
+      form.reset(DEFAULTS);
+      setSlot(null);
+      setOpen(false);
+      onBooked?.(appt.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not book";
+      if (e instanceof ApiClientError && e.code === "slot_taken") setSlot(null);
+      setSlotError(msg);
+      toast.error(msg);
     }
-    toast.success("Appointment booked", { description: "Confirmation messages were added to the delivery log." });
-    form.reset(DEFAULTS);
-    setSlot(null);
-    setOpen(false);
-    onBooked?.(res.appointment.id);
   };
 
   return (
@@ -175,7 +174,6 @@ export function ManualBookingDialog({ data, onBooked }: { data: ClinicData; onBo
             <div className="sm:col-span-2">
               {data.clinic && (
                 <SlotPicker
-                  clinicId={data.clinic.id}
                   reasonId={reasonId || undefined}
                   providerId={providerId}
                   value={slot}
@@ -279,7 +277,7 @@ export function ManualBookingDialog({ data, onBooked }: { data: ClinicData; onBo
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit">Book appointment</Button>
+            <Button type="submit" disabled={create.isPending}>{create.isPending ? "Booking…" : "Book appointment"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

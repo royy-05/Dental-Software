@@ -9,6 +9,7 @@ import { log } from "../log";
 import { dbToWall } from "../mappers";
 import { loadClinic } from "../services/clinic";
 import { purgeExpiredHolds } from "../services/booking";
+import { purgeExpiredPatientData } from "./retention";
 
 /**
  * Delivery of queued messages (worker side). Each delivery-log row is claimed atomically (queued/scheduled -> sending)
@@ -143,8 +144,9 @@ export async function hourlyTick(now = new Date()) {
   const holds = await withPlatform((tx) => purgeExpiredHolds(tx, now));
   const summaries = await sendDailySummaries(now);
   await expireRateLimits(now);
+  const retention = await purgeExpiredPatientData(now);
   const swept = await sweepDueMessages(now);
-  return { holds, summaries, swept };
+  return { holds, summaries, retention, swept };
 }
 
 async function expireRateLimits(now: Date) {

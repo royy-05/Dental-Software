@@ -4,25 +4,22 @@ import { useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Plus } from "lucide-react";
 import type { TicketStatus } from "@/types";
-import { useApp, useCurrentClinic } from "@/store/app";
 import { RaiseTicketDialog } from "@/components/clinic/raise-ticket";
 import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader } from "@/components/shared/page-header";
-import { EmptyState } from "@/components/shared/states";
+import { EmptyState, ErrorState, LoadingState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TicketList, TicketThread, useClinicTickets } from "@/components/support/tickets";
 
 function Support() {
-  const clinic = useCurrentClinic();
   const [status, setStatus] = useState<TicketStatus | "all">("all");
-  const list = useClinicTickets(clinic?.id, status);
-  const tickets = useApp((s) => s.db.tickets);
+  const { list, all: tickets, isLoading, isError, refetch } = useClinicTickets(status);
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
   const openId = params.get("ticket");
-  const open = openId ? tickets.find((t) => t.id === openId && t.clinicId === clinic?.id) : undefined;
+  const open = openId ? tickets.find((t) => t.id === openId) : undefined;
   const setOpen = (id?: string) => router.replace(id ? `${pathname}?ticket=${id}` : pathname, { scroll: false });
 
   return (
@@ -40,9 +37,13 @@ function Support() {
           />
         }
       />
-      {openId ? (
+      {isError ? (
+        <ErrorState onRetry={() => refetch()} />
+      ) : openId ? (
         open ? (
           <TicketThread ticket={open} onBack={() => setOpen()} />
+        ) : isLoading ? (
+          <LoadingState label="Loading ticket…" />
         ) : (
           <EmptyState title="Ticket not found" description="It may belong to another clinic." action={<Button variant="outline" onClick={() => setOpen()}>Back to tickets</Button>} />
         )
@@ -57,7 +58,7 @@ function Support() {
               <TabsTrigger value="closed">Closed</TabsTrigger>
             </TabsList>
           </Tabs>
-          <TicketList tickets={list} onOpen={(id) => setOpen(id)} />
+          {isLoading ? <LoadingState label="Loading tickets…" /> : <TicketList tickets={list} onOpen={(id) => setOpen(id)} />}
         </div>
       )}
     </>

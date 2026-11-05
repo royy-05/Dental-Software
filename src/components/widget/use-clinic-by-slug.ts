@@ -1,8 +1,8 @@
 "use client";
 
-import { useApp } from "@/store/app";
+import { usePublicClinic } from "@/lib/api/public";
 
-/** Resolve a clinic from its booking slug or custom slug (Settings > Widgets). */
+/** Public booking bundle for a clinic slug or custom slug (resolved by the server). */
 export function useClinicBySlug(slug: string) {
-  return useApp((s) => s.db.clinics.find((c) => c.slug === slug || c.settings.widget.customSlug === slug));
+  return usePublicClinic(slug);
 }

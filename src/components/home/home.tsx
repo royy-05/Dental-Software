@@ -7,9 +7,9 @@ import { ArrowRight } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { SOURCE_LABELS } from "@/types";
 import { rangeFor, RANGE_LABELS } from "@/lib/range";
-import { fromWall } from "@/lib/time";
-import { useCurrentUser } from "@/store/app";
-import { useHydrated } from "@/components/shared/hydration";
+import { dayKey, fromWall } from "@/lib/time";
+import { useCurrentUser } from "@/lib/api/session";
+import { useHomeReport } from "@/lib/api/clinic";
 import { PageHeader, StatCard } from "@/components/shared/page-header";
 import { RangePicker, type RangeValue } from "@/components/shared/range-picker";
 import { ListState, LoadingState, useDemoState, ErrorState } from "@/components/shared/states";
@@ -18,19 +18,20 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useClinicData } from "@/components/appointments/use-clinic-data";
-import { homeMetrics } from "./metrics";
+import type { HomeMetrics } from "./metrics";
 
 const SPLIT_COLORS = ["#0f766e", "#6d28d9"];
 
 export function ClinicHome() {
   const data = useClinicData();
   const user = useCurrentUser();
-  const hydrated = useHydrated();
   const demo = useDemoState();
   const [range, setRange] = useState<RangeValue>({ preset: "week" });
   const now = data.clinicNow();
   const r = rangeFor(range.preset, now, range.from && range.to ? { from: range.from, to: range.to } : undefined);
-  const m = useMemo(() => homeMetrics(data.appointments, r), [data.appointments, r.from.getTime(), r.to.getTime()]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Metrics are aggregated in SQL on the server for the selected clinic-local day range.
+  const report = useHomeReport(data.clinicId ? { from: dayKey(r.from), to: dayKey(r.to) } : undefined);
+  const m: HomeMetrics = report.data ?? { total: 0, previous: 0, changePct: 0, trend: [], newCount: 0, returningCount: 0, byStatus: {} };
   const latest = useMemo(() => [...data.appointments].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5), [data.appointments]);
   const split = [
     { name: "New", value: m.newCount },
@@ -38,7 +39,7 @@ export function ClinicHome() {
   ];
   const splitTotal = m.newCount + m.returningCount;
 
-  if (!hydrated) return <LoadingState label="Loading home…" />;
+  if ((data.isLoading && !data.clinic) || (report.isLoading && !report.data)) return <LoadingState label="Loading home…" />;
 
   return (
     <>
@@ -47,8 +48,8 @@ export function ClinicHome() {
         description={`${data.clinic?.name ?? ""} · ${format(now, "EEEE, MMMM d")}`}
         actions={<RangePicker value={range} onChange={setRange} presets={["today", "week", "month", "custom"]} />}
       />
-      {demo === "error" ? (
-        <ErrorState onRetry={() => window.location.assign(window.location.pathname)} />
+      {demo === "error" || report.isError || data.isError ? (
+        <ErrorState onRetry={() => { report.refetch(); data.refetch(); }} />
       ) : (
         <div className="grid gap-4">
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -135,7 +136,7 @@ export function ClinicHome() {
               </Button>
             </CardHeader>
             <CardContent className="p-0">
-              <ListState items={latest} emptyTitle="No bookings yet" emptyDescription="Share your booking link to start receiving appointments.">
+              <ListState items={latest} loading={data.isLoading && !data.appointments.length} emptyTitle="No bookings yet" emptyDescription="Share your booking link to start receiving appointments.">
                 {(list) => (
                   <ul className="divide-y">
                     {list.map((a) => (

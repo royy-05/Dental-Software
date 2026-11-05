@@ -1,30 +1,27 @@
 "use client";
 
 import { useMemo } from "react";
-import { useApp } from "@/store/app";
+import { useAppointments, useClinicConfig, type AppointmentWindow } from "@/lib/api/clinic";
+import { useClinicBundle, useClinicId } from "@/lib/api/session";
 import { nowInZone } from "@/lib/time";
 
-/** Everything the appointments/home screens need for the clinic selected in the top bar. */
-export function useClinicData() {
-  const clinicId = useApp((s) => s.session.clinicId);
-  const clinics = useApp((s) => s.db.clinics);
-  const providersAll = useApp((s) => s.db.providers);
-  const reasonsAll = useApp((s) => s.db.reasons);
-  const appointmentsAll = useApp((s) => s.db.appointments);
-  const referrersAll = useApp((s) => s.db.referrers);
-  const flows = useApp((s) => s.db.flows);
-  const insurancesAll = useApp((s) => s.db.clinicInsurances);
-  const operatoriesAll = useApp((s) => s.db.operatories);
+/**
+ * Everything the appointments/home screens need for the clinic selected in the top bar: the configuration
+ * bundle (reasons, providers, operatories, referrers, insurances, flow) plus the appointments in a date window
+ * (default 60 days back, 90 days ahead). Lists are filtered client-side inside that window, as in Phase 1.
+ */
+export function useClinicData(window: AppointmentWindow = {}) {
+  const clinicId = useClinicId();
+  const bundle = useClinicBundle();
+  const cfg = useClinicConfig();
+  const appts = useAppointments(window);
+  const clinic = bundle.data?.clinic;
+  const config = cfg.config;
+  const appointments = appts.data;
 
   return useMemo(() => {
-    const clinic = clinics.find((c) => c.id === clinicId);
-    const providers = providersAll.filter((p) => p.clinicId === clinicId);
-    const reasons = reasonsAll.filter((r) => r.clinicId === clinicId).sort((a, b) => a.order - b.order);
-    const appointments = appointmentsAll.filter((a) => a.clinicId === clinicId);
-    const referrers = referrersAll.filter((r) => r.clinicId === clinicId);
-    const flow = flows.find((f) => f.clinicId === clinicId);
-    const insurances = insurancesAll.filter((i) => i.clinicId === clinicId);
-    const operatories = operatoriesAll.filter((o) => o.clinicId === clinicId);
+    const providers = config.providers;
+    const reasons = [...config.reasons].sort((a, b) => a.order - b.order);
     const providerName = (id: string) => providers.find((p) => p.id === id)?.displayName ?? "Unknown";
     const reasonName = (id: string) => reasons.find((r) => r.id === id)?.name ?? "Unknown";
     return {
@@ -32,16 +29,19 @@ export function useClinicData() {
       clinic,
       providers,
       reasons,
-      appointments,
-      referrers,
-      flow,
-      insurances,
-      operatories,
+      appointments: appointments ?? [],
+      referrers: config.referrers,
+      flow: config.flow,
+      insurances: config.insurances,
+      operatories: config.operatories,
       providerName,
       reasonName,
       clinicNow: () => (clinic ? nowInZone(clinic.timeZone) : new Date()),
+      isLoading: bundle.isLoading || cfg.isLoading || appts.isLoading,
+      isError: bundle.isError || cfg.isError || appts.isError,
+      refetch: () => Promise.all([bundle.refetch(), cfg.refetch(), appts.refetch()]),
     };
-  }, [clinicId, clinics, providersAll, reasonsAll, appointmentsAll, referrersAll, flows, insurancesAll, operatoriesAll]);
+  }, [clinicId, clinic, config, appointments, bundle, cfg, appts]);
 }
 
 export type ClinicData = ReturnType<typeof useClinicData>;
