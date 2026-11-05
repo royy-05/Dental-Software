@@ -37,6 +37,10 @@ export interface Slot {
   operatoryId?: string;
 }
 
+/** The slice of an appointment the engine needs (the server loads only these columns). */
+export type SlotAppointment = Pick<Appointment, "id" | "start" | "end" | "providerId" | "operatoryId" | "status">;
+export type SlotHoldLike = Pick<SlotHold, "id" | "start" | "end" | "providerId" | "operatoryId" | "expiresAt" | "sessionId">;
+
 export interface SlotContext {
   reason: Reason;
   providers: Provider[]; // candidate providers (already filtered to the clinic)
@@ -44,8 +48,8 @@ export interface SlotContext {
   clinicHours: WeeklyHours;
   holidays: Holiday[];
   blockouts: Blockout[];
-  appointments: Appointment[]; // clinic appointments (any status; non-blocking statuses ignored)
-  holds: SlotHold[];
+  appointments: SlotAppointment[]; // clinic appointments (any status; non-blocking statuses ignored)
+  holds: SlotHoldLike[];
   rules: BookingRules;
   now: Date; // clinic wall-clock now
   /** Hold owned by the current session, ignored when checking conflicts. */
@@ -92,7 +96,7 @@ function conflicts(list: Busy[] | undefined, start: number, end: number, bufferM
   return list.some((b) => overlaps(start - bufferMs, end + bufferMs, b.start, b.end));
 }
 
-export function countBookingsOnDay(appointments: Appointment[], day: Date, ignoreId?: string): number {
+export function countBookingsOnDay(appointments: SlotAppointment[], day: Date, ignoreId?: string): number {
   const key = dayKey(day);
   return appointments.filter((a) => a.id !== ignoreId && a.start.slice(0, 10) === key && BLOCKING_STATUSES.includes(a.status)).length;
 }

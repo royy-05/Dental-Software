@@ -155,3 +155,51 @@ export const zUtm = z.object({
   term: zText(200).optional(),
   content: zText(200).optional(),
 });
+
+// ---------- bookings ----------
+
+export const zInsurance = z.object({
+  hasInsurance: z.boolean(),
+  carrierName: zText(200).optional(),
+  networkStatus: z.enum(["in_network", "out_of_network", "not_accepted", "other"]).optional(),
+  subscriberName: zText(200).optional(),
+  subscriberId: zText(100).optional(),
+  subscriberDob: zText(20).optional(),
+  extraAnswers: z.record(zText(300), zText(1000)).optional(),
+});
+
+export const zPatientDetails = z.object({
+  firstName: zName(80),
+  lastName: zName(80),
+  dob: zDay,
+  phone: zPhone.or(z.literal("")),
+  email: zEmail.or(z.literal("")),
+  message: zText(2000).optional(),
+});
+
+export const zAnswers = z.record(zId, z.union([zText(2000), z.boolean()]));
+export const zFiles = z.array(z.object({ name: zText(200), size: z.number().int().min(0).max(50_000_000) })).max(10);
+
+export const zSessionId = z.string().regex(/^[\w-]{6,80}$/);
+
+export const zBookingBody = z.object({
+  reasonId: zId,
+  providerId: zId,
+  start: zWall,
+  patientType: zPatientType,
+  patient: zPatientDetails,
+  bookingForSomeoneElse: z.boolean().default(false),
+  bookerName: zText(120).optional(),
+  insurance: zInsurance,
+  answers: zAnswers.default({}),
+  files: zFiles.default([]),
+  smsConsent: z.boolean().default(false),
+  holdId: zId.optional(),
+  sessionId: zSessionId.optional(),
+  referrerId: z.string().regex(/^\d{1,9}$/).optional(),
+  utm: zUtm.default({}),
+  gclid: zText(200).optional(),
+  fbclid: zText(200).optional(),
+  /** Honeypot: real browsers leave it empty. */
+  website: z.string().max(200).optional(),
+});

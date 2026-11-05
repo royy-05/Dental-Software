@@ -478,6 +478,8 @@ export interface Appointment {
   smsConsent: { given: boolean; at?: string; termsVersion?: string; ip?: string };
   bookedBy: "patient" | "staff";
   token: string; // reschedule / cancel link token
+  /** Bumped by the server on reschedule and cancel; older signed links and reminders become stale. */
+  version?: number;
 }
 
 export interface SlotHold {
@@ -567,7 +569,7 @@ export interface MessageTemplate {
   enabled: boolean;
 }
 
-export type DeliveryStatus = "queued" | "scheduled" | "sent" | "delivered" | "failed" | "opened" | "bounced";
+export type DeliveryStatus = "queued" | "scheduled" | "sent" | "delivered" | "failed" | "opened" | "bounced" | "skipped";
 export interface MessageLog {
   id: string;
   clinicId: string;

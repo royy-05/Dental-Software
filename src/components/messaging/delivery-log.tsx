@@ -24,6 +24,7 @@ export const DELIVERY_BADGE: Record<DeliveryStatus, BadgeProps["variant"]> = {
   opened: "violet",
   failed: "danger",
   bounced: "warning",
+  skipped: "muted",
 };
 
 export function eventLabel(e: MessageLog["event"]): string {

@@ -12,5 +12,6 @@ export default async function setup() {
   }
   const env = { ...process.env, DATABASE_URL: direct, DIRECT_DATABASE_URL: direct };
   execSync("npx prisma migrate deploy", { env, stdio: "pipe" });
+  execSync("npx tsx scripts/setup-jobs.ts", { env, stdio: "pipe" });
   execSync("npx tsx prisma/seed.ts", { env, stdio: "pipe" });
 }

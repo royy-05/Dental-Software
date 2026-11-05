@@ -340,6 +340,7 @@ export function toAppointment(a: AppointmentRow, token = ""): Appointment {
     smsConsent: consent ? { given: consent.given, at: consent.at.toISOString(), termsVersion: consent.termsVersion, ip: opt(consent.ip) } : { given: false },
     bookedBy: a.bookedBy as Appointment["bookedBy"],
     token,
+    version: a.version,
   } as Appointment;
 }
 
