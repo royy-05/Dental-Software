@@ -3,17 +3,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Bold, Italic, Link2, Mail, MessageSquare, RotateCcw, Save, Send } from "lucide-react";
-import type { Channel, MessageLog, MessageTemplate, TemplateEvent } from "@/types";
+import type { Channel, MessageTemplate, TemplateEvent } from "@/types";
 import { TEMPLATE_EVENT_LABELS } from "@/types";
-import { useApp, useCurrentUser } from "@/store/app";
-import { renderTemplate, simulateDelivery, smsSegments, templateVars } from "@/lib/notify";
+import { api } from "@/lib/api/client";
+import { clinicPath, useTemplates } from "@/lib/api/clinic";
+import { qk, useApiMutation, useCurrentUser } from "@/lib/api/session";
+import { renderTemplate, smsSegments, templateVars } from "@/lib/notify";
 import { nowInZone, toWall } from "@/lib/time";
-import { cn, uid } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { TEMPLATE_PLACEHOLDERS } from "@/mock/defaults";
 import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
-import { useHydrated } from "@/components/shared/hydration";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,28 +29,42 @@ import { insertAt, renderRichText, sampleAppointment, stripRichText, wrapSelecti
 const EVENTS = Object.keys(TEMPLATE_EVENT_LABELS) as TemplateEvent[];
 
 function TemplatesModule() {
-  const hydrated = useHydrated();
   const { clinic, clinicId, reasons, providers } = useClinicConfig();
-  const templates = useApp((s) => s.db.templates);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
-  const addMessages = useApp((s) => s.addMessages);
+  const tq = useTemplates();
+  const templates = useMemo(() => tq.data ?? [], [tq.data]);
   const user = useCurrentUser();
+  const base = clinicPath(clinicId, "/templates");
+  const invalidate = [qk.clinicRes(clinicId, "templates"), qk.clinicRes(clinicId, "messages")];
+  const patch = useApiMutation(({ id, body }: { id: string; body: { subject?: string; body?: string; enabled?: boolean }; msg: string }) => api<MessageTemplate>(`${base}/${id}`, { method: "PATCH", body }), { invalidate, success: (_r, v) => v.msg });
+  const resetMut = useApiMutation((id: string) => api<MessageTemplate>(`${base}/${id}/reset`, { method: "POST" }), {
+    invalidate,
+    success: "Reset to the platform default",
+    onSuccess: (t) => {
+      setSubject(t.subject);
+      setBody(t.body);
+    },
+  });
+  const testMut = useApiMutation(({ id }: { id: string; to: string }) => api(`${base}/${id}/test`, { method: "POST" }), {
+    invalidate,
+    success: (_r, v) => `Test ${channel === "email" ? "email" : "SMS"} queued to ${v.to}`,
+  });
   const [event, setEvent] = useState<TemplateEvent>("booked_new");
   const [channel, setChannel] = useState<Channel>("email");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  const mine = useMemo(() => templates.filter((t) => t.clinicId === clinicId), [templates, clinicId]);
-  const find = (e: TemplateEvent, c: Channel) => mine.find((t) => t.event === e && t.channel === c);
+  // Clinic copies with the global defaults filling any gap (resolved by the server).
+  const find = (e: TemplateEvent, c: Channel) => templates.find((t) => t.event === e && t.channel === c);
   const current = find(event, channel);
-  const defaults = useMemo(() => templates.find((t) => t.clinicId === null && t.event === event && t.channel === channel), [templates, event, channel]);
+  const currentId = current?.id;
+  const currentSubject = current?.subject;
+  const currentBody = current?.body;
 
   useEffect(() => {
-    setSubject(current?.subject ?? "");
-    setBody(current?.body ?? "");
-  }, [current]);
+    setSubject(currentSubject ?? "");
+    setBody(currentBody ?? "");
+  }, [currentId, currentSubject, currentBody]);
 
   const vars = useMemo(() => {
     if (!clinic) return {} as Record<string, string>;
@@ -81,52 +96,19 @@ function TemplatesModule() {
     if (!current) return;
     if (channel === "email" && !subject.trim()) return void toast.error("Email templates need a subject.");
     if (!body.trim()) return void toast.error("The message can't be empty.");
-    mutate((db) => {
-      const t = db.templates.find((x) => x.id === current.id)!;
-      t.subject = subject;
-      t.body = body;
-    });
-    logAudit({ action: `Edited ${channel.toUpperCase()} template “${TEMPLATE_EVENT_LABELS[event]}”`, category: "template", target: "Templates", clinicId });
-    toast.success("Template saved");
+    patch.mutate({ id: current.id, body: { subject, body }, msg: "Template saved" });
   };
 
-  const toggle = (t: MessageTemplate, v: boolean) => {
-    mutate((db) => void (db.templates.find((x) => x.id === t.id)!.enabled = v));
-    logAudit({ action: `${v ? "Enabled" : "Disabled"} ${t.channel.toUpperCase()} “${TEMPLATE_EVENT_LABELS[t.event]}”`, category: "template", target: "Templates", clinicId });
-    toast.success(`${TEMPLATE_EVENT_LABELS[t.event]} ${t.channel.toUpperCase()} ${v ? "on" : "off"}`);
-  };
+  const toggle = (t: MessageTemplate, v: boolean) => patch.mutate({ id: t.id, body: { enabled: v }, msg: `${TEMPLATE_EVENT_LABELS[t.event]} ${t.channel.toUpperCase()} ${v ? "on" : "off"}` });
 
-  const reset = () => {
-    if (!current || !defaults) return;
-    mutate((db) => {
-      const t = db.templates.find((x) => x.id === current.id)!;
-      t.subject = defaults.subject;
-      t.body = defaults.body;
-    });
-    setSubject(defaults.subject);
-    setBody(defaults.body);
-    logAudit({ action: `Reset ${channel.toUpperCase()} template “${TEMPLATE_EVENT_LABELS[event]}” to default`, category: "template", target: "Templates", clinicId });
-    toast.success("Reset to the platform default");
-  };
+  const reset = () => current && resetMut.mutate(current.id);
 
+  /** Sends the saved version of the template through the real queue (see the delivery log in Settings > Notifications). */
   const sendTest = () => {
+    if (!current) return;
+    if (dirty) return void toast.error("Save the template first, then send a test.");
     const to = channel === "email" ? (user?.email ?? clinic.email) : clinic.settings.notifications.alternateSmsNumber || clinic.phone;
-    const id = uid("msg");
-    const msg: MessageLog = {
-      id,
-      clinicId,
-      channel,
-      direction: "outbound",
-      recipientType: "clinic",
-      to,
-      event: "test",
-      subject: channel === "email" ? `[TEST] ${renderTemplate(subject, vars)}` : undefined,
-      body: renderedBody,
-      createdAt: new Date().toISOString(),
-      ...simulateDelivery(id, channel, to),
-    };
-    addMessages([msg]);
-    toast.success(`Test ${channel === "email" ? "email" : "SMS"} sent to ${to}`, { description: `Simulated status: ${msg.status}. See the delivery log in Settings > Notifications.` });
+    testMut.mutate({ id: current.id, to });
   };
 
   return (
@@ -139,7 +121,7 @@ function TemplatesModule() {
             <CardDescription>Turn each channel on or off per event.</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            <ListState items={EVENTS} loading={!hydrated} emptyTitle="No templates">
+            <ListState items={EVENTS} loading={tq.isLoading} emptyTitle="No templates">
               {(list) => (
                 <ul className="divide-y border-t">
                   {list.map((e) => {
@@ -237,8 +219,8 @@ function TemplatesModule() {
                   )}
                 </section>
                 <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
-                  <Button variant="ghost" onClick={reset} disabled={!defaults}><RotateCcw /> Reset to default</Button>
-                  <Button variant="outline" onClick={sendTest}><Send /> Send test</Button>
+                  <Button variant="ghost" onClick={reset} disabled={!current || current.clinicId === null}><RotateCcw /> Reset to default</Button>
+                  <Button variant="outline" onClick={sendTest} disabled={testMut.isPending}><Send /> Send test</Button>
                   <Button onClick={save} disabled={!dirty}><Save /> Save template</Button>
                 </div>
               </>

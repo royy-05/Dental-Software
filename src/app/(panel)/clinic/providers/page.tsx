@@ -1,15 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { toast } from "sonner";
 import { Pencil, Plus } from "lucide-react";
 import type { Provider } from "@/types";
-import { useApp } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { clinicPath } from "@/lib/api/clinic";
+import { useApiMutation } from "@/lib/api/session";
 import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
-import { useHydrated } from "@/components/shared/hydration";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,33 +16,23 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Avatar, useClinicConfig } from "@/components/config/common";
 import { ProviderEditor, type ProviderSave } from "@/components/config/provider-editor";
-import { setProviderReasons } from "@/components/config/link-sync";
 
 function ProvidersModule() {
-  const hydrated = useHydrated();
-  const { clinicId, reasons, providers, operatories } = useClinicConfig();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const { clinicId, reasons, providers, operatories, isLoading } = useClinicConfig();
   const [editing, setEditing] = useState<Provider | null | "new">(null);
+  const base = clinicPath(clinicId, "/providers");
+  const create = useApiMutation((data: ProviderSave) => api<Provider>(base, { body: data }), { success: "Provider added", onSuccess: () => setEditing(null) });
+  const update = useApiMutation(({ id, data }: { id: string; data: Partial<ProviderSave> }) => api<Provider>(`${base}/${id}`, { method: "PATCH", body: data }), {
+    success: (p, v) => ("showOnline" in v.data && Object.keys(v.data).length === 1 ? `${p.displayName} ${p.showOnline ? "shows" : "is hidden"} in the booking widget` : "Provider updated"),
+    onSuccess: (_p, v) => Object.keys(v.data).length > 1 && setEditing(null),
+  });
 
-  const setOnline = (p: Provider, v: boolean) => {
-    mutate((db) => void (db.providers.find((x) => x.id === p.id)!.showOnline = v));
-    logAudit({ action: `${v ? "Showed" : "Hid"} ${p.displayName} online`, category: "settings", target: "Providers", clinicId });
-    toast.success(`${p.displayName} ${v ? "shows" : "is hidden"} in the booking widget`);
-  };
+  const setOnline = (p: Provider, v: boolean) => update.mutate({ id: p.id, data: { showOnline: v } });
 
   const save = (data: ProviderSave) => {
     const current = editing === "new" ? null : editing;
-    const { reasonIds, ...rest } = data;
-    const id = current?.id ?? uid("p");
-    mutate((db) => {
-      if (current) Object.assign(db.providers.find((p) => p.id === id)!, rest);
-      else db.providers.push({ ...rest, id, clinicId, reasonIds: [] });
-      setProviderReasons(db, id, reasonIds);
-    });
-    logAudit({ action: current ? `Edited provider ${data.displayName}` : `Added provider ${data.displayName}`, category: "settings", target: "Providers", clinicId });
-    toast.success(current ? "Provider updated" : "Provider added");
-    setEditing(null);
+    if (current) update.mutate({ id: current.id, data });
+    else create.mutate(data);
   };
 
   const onlineCount = providers.filter((p) => p.showOnline && p.active).length;
@@ -53,7 +42,7 @@ function ProvidersModule() {
       <PageHeader title="Providers" description="Doctors, hygienists and assistants patients can book with." actions={<Button onClick={() => setEditing("new")}><Plus /> Add provider</Button>} />
       <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
         <Card>
-          <ListState items={providers} loading={!hydrated} emptyTitle="No providers yet" emptyDescription="Add the people patients can book with." emptyAction={<Button size="sm" onClick={() => setEditing("new")}><Plus /> Add provider</Button>}>
+          <ListState items={providers} loading={isLoading} emptyTitle="No providers yet" emptyDescription="Add the people patients can book with." emptyAction={<Button size="sm" onClick={() => setEditing("new")}><Plus /> Add provider</Button>}>
             {(list) => (
               <Table>
                 <TableHeader>

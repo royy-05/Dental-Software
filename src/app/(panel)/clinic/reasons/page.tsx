@@ -1,25 +1,25 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 import { Copy, GripVertical, Pencil, Plus, Trash2 } from "lucide-react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Operatory, Provider, Reason } from "@/types";
-import { useApp } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { clinicPath } from "@/lib/api/clinic";
+import { useApiMutation } from "@/lib/api/session";
 import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
-import { useHydrated } from "@/components/shared/hydration";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog, useClinicConfig, useConfirm } from "@/components/config/common";
 import { ReasonEditor } from "@/components/config/reason-editor";
-import { rebuildMirrors, removeReason } from "@/components/config/link-sync";
+
+type ReasonSave = Omit<Reason, "id" | "clinicId" | "order" | "active">;
 
 function TypeBadges({ t }: { t: Reason["patientType"] }) {
   return (
@@ -94,33 +94,31 @@ function Row({
 }
 
 function ReasonsModule() {
-  const hydrated = useHydrated();
-  const { clinic, clinicId, reasons, providers, operatories } = useClinicConfig();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const { clinic, clinicId, reasons, providers, operatories, isLoading } = useClinicConfig();
   const [editing, setEditing] = useState<Reason | null | "new">(null);
   const del = useConfirm<Reason>();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const ids = useMemo(() => reasons.map((r) => r.id), [reasons]);
+  const base = clinicPath(clinicId, "/reasons");
+
+  const reorder = useApiMutation((next: string[]) => api(`${base}/reorder`, { body: { ids: next } }), { success: "Order saved" });
+  const create = useApiMutation((data: ReasonSave) => api<Reason>(base, { body: data }), { success: "Reason added", onSuccess: () => setEditing(null) });
+  const update = useApiMutation(({ id, data }: { id: string; data: Partial<ReasonSave> & { active?: boolean } }) => api<Reason>(`${base}/${id}`, { method: "PATCH", body: data }), {
+    success: (r, v) => ("active" in v.data ? `${r.name} is now ${r.active ? "active" : "inactive"}` : "Reason updated"),
+    onSuccess: (_r, v) => !("active" in v.data) && setEditing(null),
+  });
+  const duplicate = useApiMutation((id: string) => api(`${base}/${id}/duplicate`, { method: "POST" }), { success: "Reason duplicated (inactive until you turn it on)" });
+  const remove = useApiMutation((id: string) => api(`${base}/${id}`, { method: "DELETE" }), { success: "Reason deleted" });
 
   const onDragEnd = (e: DragEndEvent) => {
     if (!e.over || e.active.id === e.over.id) return;
-    const next = arrayMove(ids, ids.indexOf(String(e.active.id)), ids.indexOf(String(e.over.id)));
-    mutate((db) => next.forEach((id, i) => void (db.reasons.find((r) => r.id === id)!.order = i)));
-    logAudit({ action: "Reordered reasons for visit", category: "settings", target: "Reasons", clinicId });
-    toast.success("Order saved");
+    reorder.mutate(arrayMove(ids, ids.indexOf(String(e.active.id)), ids.indexOf(String(e.over.id))));
   };
 
-  const save = (data: Omit<Reason, "id" | "clinicId" | "order" | "active">) => {
+  const save = (data: ReasonSave) => {
     const current = editing === "new" ? null : editing;
-    mutate((db) => {
-      if (current) Object.assign(db.reasons.find((r) => r.id === current.id)!, data);
-      else db.reasons.push({ ...data, id: uid("r"), clinicId, order: reasons.length, active: true });
-      rebuildMirrors(db, clinicId);
-    });
-    logAudit({ action: current ? `Edited reason “${data.name}”` : `Added reason “${data.name}”`, category: "settings", target: "Reasons", clinicId });
-    toast.success(current ? "Reason updated" : "Reason added");
-    setEditing(null);
+    if (current) update.mutate({ id: current.id, data });
+    else create.mutate({ ...data, active: true } as ReasonSave);
   };
 
   return (
@@ -131,7 +129,7 @@ function ReasonsModule() {
         actions={<Button onClick={() => setEditing("new")}><Plus /> Add reason</Button>}
       />
       <Card>
-        <ListState items={reasons} loading={!hydrated} emptyTitle="No reasons yet" emptyDescription="Add the visit types patients can book online." emptyAction={<Button size="sm" onClick={() => setEditing("new")}><Plus /> Add reason</Button>}>
+        <ListState items={reasons} loading={isLoading} emptyTitle="No reasons yet" emptyDescription="Add the visit types patients can book online." emptyAction={<Button size="sm" onClick={() => setEditing("new")}><Plus /> Add reason</Button>}>
           {(list) => (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
               <SortableContext items={list.map((r) => r.id)} strategy={verticalListSortingStrategy}>
@@ -144,20 +142,8 @@ function ReasonsModule() {
                       operatories={operatories}
                       onEdit={() => setEditing(r)}
                       onDelete={() => del.ask(r)}
-                      onToggle={(v) => {
-                        mutate((db) => void (db.reasons.find((x) => x.id === r.id)!.active = v));
-                        logAudit({ action: `${v ? "Activated" : "Deactivated"} reason “${r.name}”`, category: "settings", target: "Reasons", clinicId });
-                        toast.success(`${r.name} is now ${v ? "active" : "inactive"}`);
-                      }}
-                      onDuplicate={() => {
-                        mutate((db) => {
-                          for (const x of db.reasons) if (x.clinicId === clinicId && x.order > r.order) x.order += 1;
-                          db.reasons.push({ ...structuredClone(r), id: uid("r"), name: `${r.name} (copy)`, order: r.order + 1, active: false });
-                          rebuildMirrors(db, clinicId);
-                        });
-                        logAudit({ action: `Duplicated reason “${r.name}”`, category: "settings", target: "Reasons", clinicId });
-                        toast.success("Reason duplicated (inactive until you turn it on)");
-                      }}
+                      onToggle={(v) => update.mutate({ id: r.id, data: { active: v } })}
+                      onDuplicate={() => duplicate.mutate(r.id)}
                     />
                   ))}
                 </ul>
@@ -180,12 +166,7 @@ function ReasonsModule() {
         onOpenChange={(o) => !o && del.close()}
         title={`Delete “${del.item?.name}”?`}
         description="Existing appointments keep their history, but patients can no longer book this reason. This can't be undone."
-        onConfirm={() => {
-          const r = del.item!;
-          mutate((db) => removeReason(db, r.id));
-          logAudit({ action: `Deleted reason “${r.name}”`, category: "settings", target: "Reasons", clinicId });
-          toast.success("Reason deleted");
-        }}
+        onConfirm={() => remove.mutate(del.item!.id)}
       />
     </>
   );

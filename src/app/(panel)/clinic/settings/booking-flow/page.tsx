@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
-import { useApp } from "@/store/app";
+import { useClinicId } from "@/lib/api/session";
 import { RequirePermission } from "@/components/shared/guards";
 import { BookingFlowBuilder } from "@/components/builder/booking-flow-builder";
 
 export default function BookingFlowPage() {
-  const clinicId = useApp((s) => s.session.clinicId);
+  const clinicId = useClinicId();
   return (
     <RequirePermission perm="settings:manage">
       <Link href="/clinic/settings" className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">

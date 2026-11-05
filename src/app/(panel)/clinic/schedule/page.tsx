@@ -5,13 +5,13 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import type { Blockout, Operatory, WeeklyHours } from "@/types";
-import { useApp } from "@/store/app";
-import { uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { clinicPath, useAppointments } from "@/lib/api/clinic";
+import { useApiMutation } from "@/lib/api/session";
 import { dayKey, fmtTime, fromWall, hm, nowInZone } from "@/lib/time";
 import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader } from "@/components/shared/page-header";
 import { ListState } from "@/components/shared/states";
-import { useHydrated } from "@/components/shared/hydration";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,12 +21,10 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog, MultiCheck, WeeklyHoursEditor, hoursValid, useClinicConfig, useConfirm } from "@/components/config/common";
-import { removeOperatory, setOperatoryLinks } from "@/components/config/link-sync";
 
 function ClinicHours() {
   const { clinic, clinicId } = useClinicConfig();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const saveHours = useApiMutation((h: WeeklyHours) => api(clinicPath(clinicId, "/schedule/hours"), { method: "PUT", body: h }), { success: "Clinic hours saved" });
   const [hours, setHours] = useState<WeeklyHours | null>(null);
   useEffect(() => setHours(clinic ? structuredClone(clinic.hours) : null), [clinic]);
   if (!clinic || !hours) return null;
@@ -45,9 +43,7 @@ function ClinicHours() {
             disabled={!dirty}
             onClick={() => {
               if (!hoursValid(hours)) return void toast.error("End time must be after start time.");
-              mutate((db) => void (db.clinics.find((c) => c.id === clinicId)!.hours = hours));
-              logAudit({ action: "Updated clinic hours", category: "settings", target: "Schedule", clinicId });
-              toast.success("Clinic hours saved");
+              saveHours.mutate(hours);
             }}
           >
             Save hours
@@ -59,10 +55,9 @@ function ClinicHours() {
 }
 
 function Holidays() {
-  const { clinic, clinicId } = useClinicConfig();
-  const hydrated = useHydrated();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const { clinic, clinicId, isLoading } = useClinicConfig();
+  const add = useApiMutation((h: { date: string; name: string }) => api(clinicPath(clinicId, "/schedule/holidays"), { body: h }), { success: "Holiday added" });
+  const remove = useApiMutation((id: string) => api(clinicPath(clinicId, `/schedule/holidays/${id}`), { method: "DELETE" }), { success: "Holiday removed" });
   const [date, setDate] = useState("");
   const [name, setName] = useState("");
   const list = useMemo(() => [...(clinic?.holidays ?? [])].sort((a, b) => a.date.localeCompare(b.date)), [clinic]);
@@ -79,9 +74,7 @@ function Holidays() {
             e.preventDefault();
             if (!date || !name.trim()) return void toast.error("Pick a date and enter a name.");
             if (clinic?.holidays.some((h) => h.date === date)) return void toast.error("That date is already a holiday.");
-            mutate((db) => void db.clinics.find((c) => c.id === clinicId)!.holidays.push({ id: uid("hol"), date, name: name.trim() }));
-            logAudit({ action: `Added holiday ${date}`, category: "settings", target: "Schedule", clinicId });
-            toast.success("Holiday added");
+            add.mutate({ date, name: name.trim() });
             setDate("");
             setName("");
           }}
@@ -96,7 +89,7 @@ function Holidays() {
           </div>
           <Button type="submit"><Plus /> Add holiday</Button>
         </form>
-        <ListState items={list} loading={!hydrated} emptyTitle="No holidays" emptyDescription="Add days the clinic is closed.">
+        <ListState items={list} loading={isLoading} emptyTitle="No holidays" emptyDescription="Add days the clinic is closed.">
           {(items) => (
             <ul className="divide-y rounded-md border">
               {items.map((h) => (
@@ -106,14 +99,7 @@ function Holidays() {
                     variant="ghost"
                     size="icon"
                     aria-label={`Remove ${h.name}`}
-                    onClick={() => {
-                      mutate((db) => {
-                        const c = db.clinics.find((x) => x.id === clinicId)!;
-                        c.holidays = c.holidays.filter((x) => x.id !== h.id);
-                      });
-                      logAudit({ action: `Removed holiday ${h.date}`, category: "settings", target: "Schedule", clinicId });
-                      toast.success("Holiday removed");
-                    }}
+                    onClick={() => remove.mutate(h.id)}
                   >
                     <Trash2 />
                   </Button>
@@ -128,10 +114,9 @@ function Holidays() {
 }
 
 function Blockouts() {
-  const { clinic, clinicId, providers, operatories } = useClinicConfig();
-  const hydrated = useHydrated();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const { clinic, clinicId, providers, operatories, isLoading } = useClinicConfig();
+  const add = useApiMutation((b: Omit<Blockout, "id">) => api(clinicPath(clinicId, "/schedule/blockouts"), { body: b }), { success: "Blockout added" });
+  const remove = useApiMutation((id: string) => api(clinicPath(clinicId, `/schedule/blockouts/${id}`), { method: "DELETE" }), { success: "Blockout removed" });
   const [form, setForm] = useState({ label: "", start: "", end: "", target: "clinic" });
   const list = useMemo(() => [...(clinic?.blockouts ?? [])].sort((a, b) => a.start.localeCompare(b.start)), [clinic]);
   const targetLabel = (b: Blockout) =>
@@ -149,17 +134,14 @@ function Blockouts() {
             e.preventDefault();
             if (!form.label.trim() || !form.start || !form.end) return void toast.error("Enter a label, start and end.");
             if (form.end <= form.start) return void toast.error("End must be after start.");
-            const b: Blockout = {
-              id: uid("blk"),
+            const b: Omit<Blockout, "id"> = {
               label: form.label.trim(),
               start: form.start,
               end: form.end,
               providerId: form.target.startsWith("p:") ? form.target.slice(2) : undefined,
               operatoryId: form.target.startsWith("o:") ? form.target.slice(2) : undefined,
             };
-            mutate((db) => void db.clinics.find((c) => c.id === clinicId)!.blockouts.push(b));
-            logAudit({ action: `Added blockout “${b.label}”`, category: "settings", target: "Schedule", clinicId });
-            toast.success("Blockout added");
+            add.mutate(b);
             setForm({ label: "", start: "", end: "", target: "clinic" });
           }}
         >
@@ -189,7 +171,7 @@ function Blockouts() {
           </div>
           <Button type="submit"><Plus /> Add</Button>
         </form>
-        <ListState items={list} loading={!hydrated} emptyTitle="No blockouts" emptyDescription="Blocked time is hidden from the booking widget.">
+        <ListState items={list} loading={isLoading} emptyTitle="No blockouts" emptyDescription="Blocked time is hidden from the booking widget.">
           {(items) => (
             <ul className="divide-y rounded-md border">
               {items.map((b) => (
@@ -203,14 +185,7 @@ function Blockouts() {
                     variant="ghost"
                     size="icon"
                     aria-label={`Remove blockout ${b.label}`}
-                    onClick={() => {
-                      mutate((db) => {
-                        const c = db.clinics.find((x) => x.id === clinicId)!;
-                        c.blockouts = c.blockouts.filter((x) => x.id !== b.id);
-                      });
-                      logAudit({ action: `Removed blockout “${b.label}”`, category: "settings", target: "Schedule", clinicId });
-                      toast.success("Blockout removed");
-                    }}
+                    onClick={() => remove.mutate(b.id)}
                   >
                     <Trash2 />
                   </Button>
@@ -224,10 +199,14 @@ function Blockouts() {
   );
 }
 
+type OperatoryBody = { name: string; active: boolean; providerIds: string[]; reasonIds: string[] };
+
 function OperatoryDialog({ op, onClose }: { op: Operatory | "new" | null; onClose: () => void }) {
   const { clinicId, providers, reasons } = useClinicConfig();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const save = useApiMutation(
+    ({ id, body }: { id: string | null; body: OperatoryBody }) => api(clinicPath(clinicId, id ? `/operatories/${id}` : "/operatories"), { method: id ? "PATCH" : "POST", body }),
+    { success: "Operatory saved", onSuccess: () => onClose() },
+  );
   const [name, setName] = useState("");
   const [active, setActive] = useState(true);
   const [providerIds, setProviderIds] = useState<string[]>([]);
@@ -255,16 +234,7 @@ function OperatoryDialog({ op, onClose }: { op: Operatory | "new" | null; onClos
           onSubmit={(e) => {
             e.preventDefault();
             if (name.trim().length < 2) return setError("Enter a name");
-            const id = op === "new" || !op ? uid("op") : op.id;
-            mutate((db) => {
-              const existing = db.operatories.find((o) => o.id === id);
-              if (existing) Object.assign(existing, { name: name.trim(), active });
-              else db.operatories.push({ id, clinicId, name: name.trim(), active, providerIds: [], reasonIds: [] });
-              setOperatoryLinks(db, id, providerIds, reasonIds);
-            });
-            logAudit({ action: `${op === "new" ? "Added" : "Edited"} operatory ${name.trim()}`, category: "settings", target: "Operatories", clinicId });
-            toast.success("Operatory saved");
-            onClose();
+            save.mutate({ id: op === "new" || !op ? null : op.id, body: { name: name.trim(), active, providerIds, reasonIds } });
           }}
         >
           <div className="grid gap-1.5">
@@ -286,16 +256,16 @@ function OperatoryDialog({ op, onClose }: { op: Operatory | "new" | null; onClos
 }
 
 function RoomUsageToday() {
-  const { clinic, clinicId, operatories, reasons } = useClinicConfig();
-  const appts = useApp((s) => s.db.appointments);
+  const { clinic, operatories, reasons } = useClinicConfig();
+  const today = clinic ? dayKey(nowInZone(clinic.timeZone)) : "";
+  const { data: appts = [] } = useAppointments({ from: today, to: today }, { enabled: !!clinic });
   if (!clinic) return null;
-  const today = dayKey(nowInZone(clinic.timeZone));
   const wd = nowInZone(clinic.timeZone).getDay() as keyof typeof clinic.hours;
   const h = clinic.hours[wd];
   const open = h.enabled ? hm(h.start) : 8 * 60;
   const close = h.enabled ? hm(h.end) : 18 * 60;
   const span = Math.max(60, close - open);
-  const todays = appts.filter((a) => a.clinicId === clinicId && a.start.startsWith(today) && a.operatoryId && !["cancelled", "declined"].includes(a.status));
+  const todays = appts.filter((a) => a.start.startsWith(today) && a.operatoryId && !["cancelled", "declined"].includes(a.status));
   return (
     <Card>
       <CardHeader>
@@ -331,10 +301,11 @@ function RoomUsageToday() {
 }
 
 function Operatories() {
-  const hydrated = useHydrated();
-  const { clinicId, operatories, providers, reasons } = useClinicConfig();
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
+  const { clinicId, operatories, providers, reasons, isLoading } = useClinicConfig();
+  const toggle = useApiMutation(({ id, active }: { id: string; active: boolean }) => api(clinicPath(clinicId, `/operatories/${id}`), { method: "PATCH", body: { active } }), {
+    success: (_r, v) => `${operatories.find((o) => o.id === v.id)?.name ?? "Operatory"} ${v.active ? "active" : "inactive"}`,
+  });
+  const remove = useApiMutation((id: string) => api(clinicPath(clinicId, `/operatories/${id}`), { method: "DELETE" }), { success: "Operatory deleted" });
   const [editing, setEditing] = useState<Operatory | "new" | null>(null);
   const del = useConfirm<Operatory>();
   return (
@@ -348,7 +319,7 @@ function Operatories() {
           <Button size="sm" onClick={() => setEditing("new")}><Plus /> Add</Button>
         </CardHeader>
         <CardContent>
-          <ListState items={operatories} loading={!hydrated} emptyTitle="No operatories" emptyDescription="Add rooms or chairs to prevent double booking." emptyAction={<Button size="sm" onClick={() => setEditing("new")}><Plus /> Add operatory</Button>}>
+          <ListState items={operatories} loading={isLoading} emptyTitle="No operatories" emptyDescription="Add rooms or chairs to prevent double booking." emptyAction={<Button size="sm" onClick={() => setEditing("new")}><Plus /> Add operatory</Button>}>
             {(list) => (
               <ul className="divide-y rounded-md border">
                 {list.map((o) => (
@@ -365,11 +336,7 @@ function Operatories() {
                       <Switch
                         aria-label={`${o.name} active`}
                         checked={o.active}
-                        onCheckedChange={(v) => {
-                          mutate((db) => void (db.operatories.find((x) => x.id === o.id)!.active = v));
-                          logAudit({ action: `${v ? "Activated" : "Deactivated"} operatory ${o.name}`, category: "settings", target: "Operatories", clinicId });
-                          toast.success(`${o.name} ${v ? "active" : "inactive"}`);
-                        }}
+                        onCheckedChange={(v) => toggle.mutate({ id: o.id, active: v })}
                       />
                       <Button variant="ghost" size="icon" aria-label={`Edit ${o.name}`} onClick={() => setEditing(o)}><Pencil /></Button>
                       <Button variant="ghost" size="icon" aria-label={`Delete ${o.name}`} onClick={() => del.ask(o)}><Trash2 /></Button>
@@ -387,13 +354,8 @@ function Operatories() {
         open={del.open}
         onOpenChange={(o) => !o && del.close()}
         title={`Delete ${del.item?.name}?`}
-        description="It is unlinked from all providers and reasons."
-        onConfirm={() => {
-          const o = del.item!;
-          mutate((db) => removeOperatory(db, o.id));
-          logAudit({ action: `Deleted operatory ${o.name}`, category: "settings", target: "Operatories", clinicId });
-          toast.success("Operatory deleted");
-        }}
+        description="It is unlinked from all providers and reasons. Rooms with upcoming appointments can't be deleted."
+        onConfirm={() => remove.mutate(del.item!.id)}
       />
     </div>
   );

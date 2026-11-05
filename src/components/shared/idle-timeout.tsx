@@ -22,11 +22,13 @@ export function IdleTimeout() {
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(expire, IDLE_TIMEOUT_MS);
     };
-    const events: (keyof WindowEventMap)[] = ["pointerdown", "keydown", "scroll", "touchstart", "visibilitychange"];
+    const events: (keyof WindowEventMap)[] = ["pointerdown", "keydown", "scroll", "touchstart"];
     events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    document.addEventListener("visibilitychange", reset);
     reset();
     return () => {
       events.forEach((e) => window.removeEventListener(e, reset));
+      document.removeEventListener("visibilitychange", reset);
       if (timer.current) clearTimeout(timer.current);
     };
   }, [qc]);

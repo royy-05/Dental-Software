@@ -7,37 +7,30 @@ import { RequirePermission } from "@/components/shared/guards";
 import { PageHeader, StatCard } from "@/components/shared/page-header";
 import { RangePicker } from "@/components/shared/range-picker";
 import { ListState, useDemoState, ErrorState, LoadingState } from "@/components/shared/states";
+import { useFormAnalyticsReport } from "@/lib/api/clinic";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { downloadCsv } from "@/lib/utils";
-import {
-  dropOffByReason,
-  dropOffByStep,
-  filterSessions,
-  formTotals,
-  heatmap,
-  hourLabel,
-  peakDay,
-  peaks,
-  WEEKDAYS,
-} from "@/components/reports/aggregate";
-import { Bar, HeatmapTable, SourceFilter, useRange, useReportScope } from "@/components/reports/ui";
+import { hourLabel, peakDay, peaks, WEEKDAYS, type Heatmap } from "@/components/reports/aggregate";
+import { Bar, HeatmapTable, SourceFilter, useRange } from "@/components/reports/ui";
+
+const EMPTY_GRID: Heatmap = Array.from({ length: 7 }, () => Array(24).fill(0));
 
 function FormAnalytics() {
-  const { sessions, reasons } = useReportScope();
-  const { value, setValue, range } = useRange("last30");
+  const { value, setValue, dayRange } = useRange("last30");
   const [source, setSource] = useState<Source | "all">("all");
-  const demo = useDemoState();
+  const demoState = useDemoState();
+  const report = useFormAnalyticsReport(dayRange, source);
+  const demo = demoState !== "ready" ? demoState : report.isLoading ? "loading" : report.isError ? "error" : "ready";
 
-  const filtered = useMemo(() => filterSessions(sessions, range, source), [sessions, range, source]);
-  const totals = useMemo(() => formTotals(filtered), [filtered]);
-  const steps = useMemo(() => dropOffByStep(filtered), [filtered]);
-  const byReason = useMemo(() => dropOffByReason(filtered, reasons), [filtered, reasons]);
-  const visitsGrid = useMemo(() => heatmap(filtered), [filtered]);
-  const bookingsGrid = useMemo(() => heatmap(filtered, true), [filtered]);
+  const totals = report.data?.totals ?? { visits: 0, booked: 0, dropOffs: 0, conversion: 0 };
+  const steps = useMemo(() => report.data?.dropOffByStep ?? [], [report.data]);
+  const byReason = useMemo(() => report.data?.dropOffByReason ?? [], [report.data]);
+  const visitsGrid = report.data?.visitHeatmap ?? EMPTY_GRID;
+  const bookingsGrid = report.data?.bookingHeatmap ?? EMPTY_GRID;
 
-  const peakText = (grid: ReturnType<typeof heatmap>, noun: string) => {
+  const peakText = (grid: Heatmap, noun: string) => {
     const top = peaks(grid, 3);
     const day = peakDay(grid);
     if (!top.length) return `No ${noun} in this period.`;
@@ -59,7 +52,7 @@ function FormAnalytics() {
       {demo === "loading" ? (
         <LoadingState />
       ) : demo === "error" ? (
-        <ErrorState onRetry={() => window.location.assign(window.location.pathname)} />
+        <ErrorState onRetry={() => (report.isError ? report.refetch() : window.location.assign(window.location.pathname))} />
       ) : (
         <div className="grid gap-6">
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

@@ -1,17 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { formatDistanceToNow, format } from "date-fns";
 import { ExternalLink, History, Monitor, RotateCcw, Save, Send, Smartphone, Sparkles, Undo2 } from "lucide-react";
 import { toast } from "sonner";
-import type { FlowConfig, FormField, StepConfig, StepKey, StepOrder, WidgetTheme } from "@/types";
+import type { ClinicFlow, FlowConfig, FormField, StepConfig, StepKey, StepOrder, WidgetTheme } from "@/types";
 import { SPECIALTY_LABEL } from "./labels";
-import { useApp, useCurrentClinic, useCurrentUser } from "@/store/app";
-import { featureEnabled } from "@/lib/permissions";
-import { cn, uid } from "@/lib/utils";
+import { api } from "@/lib/api/client";
+import { clinicPath, useClinicConfig, useStarterTemplates } from "@/lib/api/clinic";
+import { qk, useApiMutation, useClinicBundle, useCurrentClinic } from "@/lib/api/session";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/shared/page-header";
-import { EmptyState } from "@/components/shared/states";
+import { EmptyState, LoadingState } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,7 +27,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { BookingWidget } from "@/components/widget/booking-widget";
 import { ConditionsEditor } from "./conditions-editor";
 import { FieldListEditor } from "./field-list-editor";
-import { applyPublish, applyRollback, draftFromTemplate, sameConfig } from "./versioning";
+import { draftFromTemplate, sameConfig } from "./versioning";
+import { previewBundle } from "./preview-bundle";
 
 const STEP_LABEL: Record<StepKey, string> = {
   reason: "Reason for visit",
@@ -53,15 +55,13 @@ function NumberField({ id, label, value, onChange, min = 0, max, help }: { id: s
 
 export function BookingFlowBuilder() {
   const clinic = useCurrentClinic();
-  const user = useCurrentUser();
-  const flows = useApp((s) => s.db.flows);
-  const allReasons = useApp((s) => s.db.reasons);
-  const plans = useApp((s) => s.db.plans);
-  const templates = useApp((s) => s.db.starterTemplates);
-  const mutate = useApp((s) => s.mutate);
-  const logAudit = useApp((s) => s.logAudit);
-  const rec = flows.find((f) => f.clinicId === clinic?.id);
-  const [draft, setDraft] = useState<FlowConfig | undefined>(() => (rec ? structuredClone(rec.draft) : undefined));
+  const bundle = useClinicBundle().data;
+  const { config, clinicId, isLoading } = useClinicConfig();
+  const rec = config.flow as ClinicFlow | undefined;
+  const reasons = config.reasons;
+  const starters = useStarterTemplates();
+  const templates = starters.data ?? [];
+  const [draft, setDraft] = useState<FlowConfig | undefined>();
   const [device, setDevice] = useState<"mobile" | "desktop">("mobile");
   const [previewTheme, setPreviewTheme] = useState<WidgetTheme | "clinic">("clinic");
   const [previewKey, setPreviewKey] = useState(0);
@@ -71,15 +71,51 @@ export function BookingFlowBuilder() {
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [addReasons, setAddReasons] = useState(false);
   const [questionReasonId, setQuestionReasonId] = useState<string>("");
-  const reasons = useMemo(() => allReasons.filter((r) => r.clinicId === clinic?.id).sort((a, b) => a.order - b.order), [allReasons, clinic?.id]);
 
-  if (!clinic || !rec || !draft) return <EmptyState title="No booking flow" description="This clinic has no booking flow yet." />;
+  // The editor state starts from the stored draft once it has loaded.
+  const storedDraft = rec?.draft;
+  useEffect(() => {
+    if (storedDraft && !draft) setDraft(structuredClone(storedDraft));
+  }, [storedDraft, draft]);
 
-  const by = user?.name ?? "Staff";
+  const base = clinicPath(clinicId, "/flow");
+  const invalidate = [qk.clinic(clinicId)];
+  const saveDraftMut = useApiMutation((cfg: FlowConfig) => api<ClinicFlow>(base, { method: "PUT", body: cfg }), { invalidate, success: "Draft saved" });
+  const publishMut = useApiMutation(({ config: cfg, note }: { config: FlowConfig; note: string }) => api<ClinicFlow>(`${base}/publish`, { body: { config: cfg, note } }), {
+    invalidate,
+    success: (f) => `Published version ${f.publishedVersion}. The live widget now uses it.`,
+    onSuccess: (f) => {
+      setDraft(structuredClone(f.draft));
+      setPublishOpen(false);
+      setPublishNote("");
+    },
+  });
+  const discardMut = useApiMutation((cfg: FlowConfig) => api<ClinicFlow>(base, { method: "PUT", body: cfg }), {
+    invalidate,
+    success: false,
+    onSuccess: (f) => {
+      setDraft(structuredClone(f.published));
+      toast.info("Draft discarded. Back to the published version.");
+    },
+  });
+  const rollbackMut = useApiMutation((version: number) => api<ClinicFlow>(`${base}/rollback`, { body: { version } }), {
+    invalidate,
+    success: (f, version) => `Rolled back to v${version}, published as v${f.publishedVersion}`,
+    onSuccess: (f) => {
+      setDraft(structuredClone(f.published));
+      setRollbackTo(null);
+    },
+  });
+  const addReasonMut = useApiMutation((body: Record<string, unknown>) => api(clinicPath(clinicId, "/reasons"), { body }), { invalidate, success: false });
+  const questionsMut = useApiMutation(({ id, questions }: { id: string; questions: FormField[] }) => api(clinicPath(clinicId, `/reasons/${id}`), { method: "PATCH", body: { questions } }), { invalidate, success: false });
+
+  if (isLoading || !clinic || !bundle) return <LoadingState label="Loading booking flow…" />;
+  if (!rec || !draft) return <EmptyState title="No booking flow" description="This clinic has no booking flow yet." />;
+
   const dirty = !sameConfig(draft, rec.draft);
   const unpublished = dirty || !sameConfig(rec.draft, rec.published);
-  const otpAvailable = featureEnabled(clinic, plans, "otp");
-  const uploadsAvailable = featureEnabled(clinic, plans, "file_uploads");
+  const otpAvailable = bundle.features.otp;
+  const uploadsAvailable = bundle.features.file_uploads;
   const up = (fn: (d: FlowConfig) => void) =>
     setDraft((d) => {
       const n = structuredClone(d!);
@@ -88,69 +124,24 @@ export function BookingFlowBuilder() {
     });
   const upStep = (key: StepKey, p: Partial<StepConfig>) => up((d) => void Object.assign(d.steps.find((s) => s.key === key)!, p));
 
-  const saveDraft = () => {
-    mutate((db) => {
-      const f = db.flows.find((x) => x.clinicId === clinic.id)!;
-      f.draft = structuredClone(draft);
-      f.draftUpdatedAt = new Date().toISOString();
-    });
-    logAudit({ action: "Saved booking flow draft", category: "settings", target: "Booking flow", clinicId: clinic.id });
-    toast.success("Draft saved");
-  };
-  const publish = () => {
-    let v = 0;
-    mutate((db) => {
-      v = applyPublish(db.flows.find((x) => x.clinicId === clinic.id)!, draft, by, publishNote.trim() || "Published from builder", new Date().toISOString());
-    });
-    logAudit({ action: `Published booking flow v${v}`, category: "settings", target: "Booking flow", clinicId: clinic.id, details: publishNote.trim() || undefined });
-    toast.success(`Published version ${v}. The live widget now uses it.`);
-    setPublishOpen(false);
-    setPublishNote("");
-  };
-  const discard = () => {
-    mutate((db) => {
-      const f = db.flows.find((x) => x.clinicId === clinic.id)!;
-      f.draft = structuredClone(f.published);
-      f.draftUpdatedAt = undefined;
-    });
-    setDraft(structuredClone(rec.published));
-    toast.info("Draft discarded. Back to the published version.");
-  };
-  const rollback = (version: number) => {
-    let v: number | null = null;
-    mutate((db) => {
-      v = applyRollback(db.flows.find((x) => x.clinicId === clinic.id)!, version, by, new Date().toISOString());
-    });
-    const cfg = rec.versions.find((x) => x.version === version)?.config;
-    if (cfg) setDraft(structuredClone(cfg));
-    logAudit({ action: `Rolled back booking flow to v${version} (now v${v})`, category: "settings", target: "Booking flow", clinicId: clinic.id });
-    toast.success(`Rolled back to v${version}, published as v${v}`);
-    setRollbackTo(null);
-  };
+  const saveDraft = () => saveDraftMut.mutate(draft);
+  const publish = () => publishMut.mutate({ config: draft, note: publishNote.trim() || "Published from builder" });
+  const discard = () => discardMut.mutate(rec.published);
+  const rollback = (version: number) => rollbackMut.mutate(version);
   const applyTemplate = () => {
     const t = templates.find((x) => x.id === templateId);
     if (!t) return;
     setDraft(draftFromTemplate(t, draft));
     if (addReasons) {
+      // Default reasons are created inactive and linked to every active provider, so they are not bookable until reviewed.
       const existing = new Set(reasons.map((r) => r.name.toLowerCase()));
       const toAdd = t.defaultReasons.filter((r) => !existing.has(r.name.toLowerCase()));
-      mutate((db) => {
-        toAdd.forEach((r, i) =>
-          db.reasons.push({
-            ...r,
-            id: uid("r"),
-            clinicId: clinic.id,
-            longDescription: r.description,
-            providerIds: [],
-            operatoryIds: [],
-            visibility: "online",
-            active: false,
-            order: reasons.length + i,
-            questions: [],
-          }),
-        );
-      });
-      if (toAdd.length) toast.info(`Added ${toAdd.length} reasons as inactive. Assign providers in Reasons for visit to make them bookable.`);
+      const providerIds = config.providers.filter((p) => p.active).map((p) => p.id);
+      if (!providerIds.length) toast.error("Add a provider first: a reason needs at least one provider.");
+      else {
+        for (const r of toAdd) addReasonMut.mutate({ ...r, longDescription: r.description, providerIds, operatoryIds: [], visibility: "online", active: false, questions: [], redirectUrl: "" });
+        if (toAdd.length) toast.info(`Added ${toAdd.length} reasons as inactive. Review them in Reasons for visit to make them bookable.`);
+      }
     }
     toast.success(`“${t.name}” copied into your draft. Review it, then save or publish.`);
     setTemplateId(null);
@@ -160,7 +151,7 @@ export function BookingFlowBuilder() {
   const qReason = reasons.find((r) => r.id === (questionReasonId || reasons[0]?.id));
   const setReasonQuestions = (list: FormField[]) => {
     if (!qReason) return;
-    mutate((db) => void (db.reasons.find((r) => r.id === qReason.id)!.questions = list));
+    questionsMut.mutate({ id: qReason.id, questions: list });
   };
 
   const publishedTemplates = templates.filter((t) => t.published);
@@ -178,7 +169,7 @@ export function BookingFlowBuilder() {
             </Button>
             <Button variant="outline" size="sm" onClick={discard} disabled={!unpublished}><Undo2 /> Discard draft</Button>
             <Button variant="secondary" size="sm" onClick={saveDraft} disabled={!dirty}><Save /> Save draft</Button>
-            <Button size="sm" onClick={() => setPublishOpen(true)} disabled={!unpublished}><Send /> Publish</Button>
+            <Button size="sm" onClick={() => setPublishOpen(true)} disabled={!unpublished || publishMut.isPending}><Send /> Publish</Button>
           </>
         }
       />
@@ -496,7 +487,7 @@ export function BookingFlowBuilder() {
           </div>
           <div className={cn("mx-auto overflow-hidden border bg-white shadow-inner", device === "mobile" ? "w-[390px] max-w-full rounded-[2rem] border-8 border-slate-800" : "w-full rounded-lg")}>
             <div className="h-[720px] overflow-y-auto">
-              <BookingWidget key={previewKey} clinicId={clinic.id} flowOverride={draft} mode="preview" forceMobile={device === "mobile"} themeOverride={previewTheme === "clinic" ? undefined : previewTheme} embedded />
+              <BookingWidget key={previewKey} bundle={previewBundle(clinic, config, draft, { otp: otpAvailable, file_uploads: uploadsAvailable })} slug={clinic.slug} flowOverride={draft} mode="preview" forceMobile={device === "mobile"} themeOverride={previewTheme === "clinic" ? undefined : previewTheme} embedded />
             </div>
           </div>
           <p className="mt-2 text-center text-xs text-muted-foreground">Preview uses your draft. It doesn&apos;t create bookings, send messages or log analytics.</p>

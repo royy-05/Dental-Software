@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Moon } from "lucide-react";
 import type { Clinic } from "@/types";
-import { useApp } from "@/store/app";
 import { DeliveryLog } from "@/components/messaging/delivery-log";
 import { SmsSimulator } from "@/components/messaging/sms-simulator";
 import { Button } from "@/components/ui/button";
@@ -15,7 +14,8 @@ const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
 export function NotificationSettings({ clinic }: { clinic: Clinic }) {
   const save = useSaveClinic();
-  const quiet = useApp((s) => s.db.platform.messaging);
+  // Platform quiet-hours defaults (section 7); the platform team changes them in System settings.
+  const quiet = { quietHoursStart: 21, quietHoursEnd: 8 };
   const [n, setN] = useState(clinic.settings.notifications);
   const [emails, setEmails] = useState(n.extraAlertEmails.join(", "));
   const emailList = emails.split(",").map((e) => e.trim()).filter(Boolean);

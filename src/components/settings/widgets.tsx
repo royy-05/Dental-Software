@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Copy, ExternalLink } from "lucide-react";
 import type { Clinic } from "@/types";
-import { useApp } from "@/store/app";
 import { embedSnippets } from "@/components/widget/embed-code";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +18,6 @@ export function useOrigin() {
 
 export function WidgetSettings({ clinic }: { clinic: Clinic }) {
   const save = useSaveClinic();
-  const clinics = useApp((s) => s.db.clinics);
   const origin = useOrigin();
   const [slug, setSlug] = useState(clinic.settings.widget.customSlug ?? "");
   const [redirectUrl, setRedirectUrl] = useState(clinic.settings.widget.redirectUrl ?? "");
@@ -29,9 +27,8 @@ export function WidgetSettings({ clinic }: { clinic: Clinic }) {
   const slugError = useMemo(() => {
     if (!slug) return undefined;
     if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) return "Use lowercase letters, numbers and single hyphens.";
-    if (clinics.some((c) => c.id !== clinic.id && (c.slug === slug || c.settings.widget.customSlug === slug))) return "That slug is already used by another clinic.";
     return undefined;
-  }, [slug, clinics, clinic.id]);
+  }, [slug]);
   const urlError = redirectUrl && !/^https?:\/\/\S+\.\S+/.test(redirectUrl) ? "Enter a full URL starting with https://" : undefined;
 
   return (
