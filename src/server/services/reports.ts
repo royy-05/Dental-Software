@@ -204,19 +204,20 @@ export async function performanceReport(tx: Tx, clinicId: string, r: DayRange) {
   const providers = (await tx.provider.findMany({ include: providerInclude, orderBy: { order: "asc" } })).map(toProvider);
   const now = nowInZone(clinic.timeZone);
   const prev = previousDayRange(r);
-  const [overview, previous, bySource, adRoi, patients, byReason, byProvider, avgLeadTimeHours, fill7, fill14] = await Promise.all([
+  const [overview, previous, bySource, adRoi, patients, previousPatients, byReason, byProvider, avgLeadTimeHours, fill7, fill14] = await Promise.all([
     overviewReport(tx, clinicId, r),
     overviewReport(tx, clinicId, prev),
     bySourceReport(tx, clinicId, clinic.timeZone, r),
     adRoiReport(tx, clinicId, clinic.timeZone),
     patientTrendReport(tx, clinicId, r),
+    patientTrendReport(tx, clinicId, prev),
     byReasonReport(tx, clinicId, r, now),
     byProviderReport(tx, clinicId, r, now, providers, clinic),
     avgLeadTimeReport(tx, clinicId, clinic.timeZone, r),
     fillRateReport(tx, clinicId, now, 7, providers, clinic),
     fillRateReport(tx, clinicId, now, 14, providers, clinic),
   ]);
-  return { range: r, overview, previous, bySource, adRoi, patientTrend: patients.trend, newPatients: patients.newPatients, byReason, byProvider, avgLeadTimeHours, fillRate7: fill7, fillRate14: fill14 };
+  return { range: r, overview, previous, bySource, adRoi, patientTrend: patients.trend, newPatients: patients.newPatients, previousNewPatients: previousPatients.newPatients, byReason, byProvider, avgLeadTimeHours, fillRate7: fill7, fillRate14: fill14 };
 }
 
 // ---------------------------------------------------------------- form analytics (5.8)

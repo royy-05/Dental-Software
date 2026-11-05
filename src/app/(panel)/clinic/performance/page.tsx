@@ -172,11 +172,9 @@ const EMPTY_OV = { bookings: 0, completed: 0, cancelled: 0, noShows: 0, showRate
 
 function Performance() {
   const { clinic } = useReportScope();
-  const { value, setValue, range, dayRange, prevDayRange } = useRange("month");
+  const { value, setValue, range, dayRange } = useRange("month");
   const demoState = useDemoState();
   const report = usePerformanceReport(dayRange);
-  // Only the previous period's new-patient count is not in the main report.
-  const prevReport = usePerformanceReport(prevDayRange);
   const demo = demoState !== "ready" ? demoState : report.isLoading ? "loading" : report.isError ? "error" : "ready";
 
   const ov = report.data?.overview ?? EMPTY_OV;
@@ -184,7 +182,7 @@ function Performance() {
   const sources = useMemo(() => report.data?.bySource ?? [], [report.data]);
   const trend = useMemo(() => report.data?.patientTrend ?? [], [report.data]);
   const newNow = report.data?.newPatients ?? 0;
-  const newPrev = prevReport.data?.newPatients ?? 0;
+  const newPrev = report.data?.previousNewPatients ?? 0;
   const reasonRows = useMemo(() => report.data?.byReason ?? [], [report.data]);
   const providerRows = useMemo(() => report.data?.byProvider ?? [], [report.data]);
   const roi = useMemo(() => report.data?.adRoi ?? [], [report.data]);

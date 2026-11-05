@@ -100,6 +100,8 @@ describe("configuration modules", () => {
     expect(after.providers.find((x: { id: string }) => x.id === prov.id).reasonIds).toContain(id);
     expect(after.operatories.find((x: { id: string }) => x.id === room.id).reasonIds).toContain(id);
     expect((await call(reason.PATCH, { method: "PATCH", params: p(A, { id }), body: { providerIds: [] } })).status).toBe(400);
+    expect((await call(reason.PATCH, { method: "PATCH", params: p(A, { id }), body: { providerIds: [], active: false } })).status).toBe(200);
+    expect((await call(reason.PATCH, { method: "PATCH", params: p(A, { id }), body: { providerIds: [prov.id], active: true } })).status).toBe(200);
     const dup = await call(duplicate.POST, { params: p(A, { id }) });
     expect(dup.status).toBe(200);
     expect(dup.json.active).toBe(false);

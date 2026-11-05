@@ -30,8 +30,13 @@ function reasonData(b: z.infer<typeof zReasonBody>) {
   };
 }
 
+/** An active reason needs a provider to be bookable; inactive reasons (starter defaults, drafts) may have none. */
+function assertProviders(b: { providerIds: string[]; active: boolean }) {
+  if (b.active && !b.providerIds.length) throw badRequest("An active reason needs at least one provider.");
+}
+
 export async function createReason(tx: Tx, clinicId: string, b: z.infer<typeof zReasonBody>): Promise<Reason> {
-  if (!b.providerIds.length) throw badRequest("A reason needs at least one provider.");
+  assertProviders(b);
   await assertOwned(tx, clinicId, "provider", b.providerIds, "provider");
   await assertOwned(tx, clinicId, "operatory", b.operatoryIds, "operatory");
   const order = (await tx.reason.aggregate({ _max: { order: true } }))._max.order ?? -1;
@@ -50,7 +55,7 @@ export async function updateReason(tx: Tx, clinicId: string, id: string, b: Part
   const current = await tx.reason.findUnique({ where: { id }, include: reasonInclude });
   if (!current) throw notFound("Reason");
   const merged = { ...toReason(current), ...b } as z.infer<typeof zReasonBody>;
-  if (!merged.providerIds.length) throw badRequest("A reason needs at least one provider.");
+  assertProviders(merged);
   await assertOwned(tx, clinicId, "provider", merged.providerIds, "provider");
   await assertOwned(tx, clinicId, "operatory", merged.operatoryIds, "operatory");
   if (b.providerIds) {
